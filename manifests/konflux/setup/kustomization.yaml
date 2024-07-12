@@ -13,6 +13,6 @@ components:
   - components/openshift-builds-operator-bundle
   - components/openshift-builds-shared-resource
   - components/openshift-builds-shared-resource-webhook
-  - components/openshift-builds-waiters
+  - components/openshift-builds-waiter
   - components/openshift-builds-webhook
 

@@ -5,26 +5,4 @@ patches:
   - target:
       kind: ProjectDevelopmentStreamTemplate
       name: openshift-builds
-    patch: |-
-      - op: add
-        path: /spec/resources/-
-        value:
-          apiVersion: appstudio.redhat.com/v1alpha1
-          kind: Component
-          metadata:
-            annotations:
-              applicationFailCounter: "0"
-              build.appstudio.openshift.io/pipeline: '{"name":"docker-build","bundle":"latest"}'
-              build.appstudio.openshift.io/status: '{"pac":{"state":"enabled"},"message":"done"}'
-            finalizers:
-              - test.appstudio.openshift.io/component
-              - pac.component.appstudio.openshift.io/finalizer
-            name: 'openshift-builds-operator-{{.versionName}}'
-          spec:
-            application: 'openshift-builds-{{.versionName}}'
-            componentName: 'openshift-builds-operator-{{.versionName}}'
-            source:
-              git:
-                dockerfileUrl: Dockerfile
-                revision: 'builds-{{.version}}'
-                url: https://github.com/redhat-openshift-builds/operator.git
+    path: component.yaml

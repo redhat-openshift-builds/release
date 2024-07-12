@@ -17,8 +17,6 @@ spec:
       annotations:
         application.thumbnail: "5"
         finalizeCount: "0"
-      finalizers:
-      - spi.appstudio.redhat.com/remote-secrets
       name: 'openshift-builds-{{.versionName}}'
     spec:
       displayName: 'Red Hat OpenShift Builds {{.version}}'

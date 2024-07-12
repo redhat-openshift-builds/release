@@ -1,0 +1,19 @@
+- op: add
+  path: /spec/resources/-
+  value:
+    apiVersion: appstudio.redhat.com/v1alpha1
+    kind: Component
+    metadata:
+      name: 'openshift-builds-image-bundler-{{.versionName}}'
+      annotations:
+        applicationFailCounter: "0"
+        build.appstudio.openshift.io/pipeline: '{"name":"docker-build","bundle":"latest"}'
+        build.appstudio.openshift.io/status: '{"pac":{"state":"enabled"},"message":"done"}'
+    spec:
+      application: 'openshift-builds-{{.versionName}}'
+      componentName: 'openshift-builds-image-bundler-{{.versionName}}'
+      source:
+        git:
+          dockerfileUrl: .konflux/image-bundler/Dockerfile
+          revision: 'builds-{{.version}}'
+          url: https://github.com/redhat-openshift-builds/shipwright-io-build.git
