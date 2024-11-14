@@ -1,0 +1,15 @@
+- op: add
+  path: /spec/resources/-
+  value:
+    apiVersion: appstudio.redhat.com/v1alpha1
+    kind: ImageRepository
+    metadata:
+      annotations:
+        image-controller.appstudio.redhat.com/update-component-image: "true"
+      name: 'openshift-builds-fbc-{{.versionName}}'
+      labels:
+        appstudio.redhat.com/application: 'openshift-builds-fbc-{{.versionName}}'
+        appstudio.redhat.com/component: 'openshift-builds-fbc-{{.versionName}}'
+    spec:
+      image:
+        visibility: public

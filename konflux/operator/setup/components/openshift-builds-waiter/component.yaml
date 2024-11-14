@@ -1,0 +1,18 @@
+- op: add
+  path: /spec/resources/-
+  value:
+    apiVersion: appstudio.redhat.com/v1alpha1
+    kind: Component
+    metadata:
+      name: 'openshift-builds-waiter-{{.versionName}}'
+      annotations:
+        build.appstudio.openshift.io/status: '{"pac":{"state":"enabled"},"message":"done"}'
+        build.appstudio.openshift.io/pipeline: '{"name":"docker-build-multi-platform-oci-ta","bundle":"latest"}'
+    spec:
+      application: 'openshift-builds-{{.versionName}}'
+      componentName: 'openshift-builds-waiter-{{.versionName}}'
+      source:
+        git:
+          dockerfileUrl: .konflux/waiter/Dockerfile
+          revision: 'builds-{{.version}}'
+          url: https://github.com/redhat-openshift-builds/shipwright-io-build.git
