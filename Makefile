@@ -21,20 +21,39 @@ $(KUSTOMIZE): $(LOCALBIN)
 	test -s $(LOCALBIN)/kustomize || GOBIN=$(LOCALBIN) GO111MODULE=on go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
 
-.PHONY: setup
-setup: ## Create new release setup
-	@$(KUSTOMIZE) build manifests/konflux/setup \
+.PHONY: operator-setup
+operator-setup: ## Create new release setup
+	@$(KUSTOMIZE) build konflux/operator/setup \
 	| $(KUBECTL) apply -f -
 
-.PHONY: release
-release: check-env
-OPENSHIFT_BUILD_VERSION_NAME := $(shell echo $(OPENSHIFT_BUILD_VERSION) | sed 's/\./-/g')
-release: ## Create new release
-	@$(KUSTOMIZE) build manifests/konflux/release \
-	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_BUILD_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_BUILD_VERSION)"' \
+.PHONY: operator-release
+operator-release: operator-check-env
+OPENSHIFT_BUILDS_VERSION_NAME := $(shell echo $(OPENSHIFT_BUILDS_VERSION) | sed 's/\./-/g')
+operator-release: ## Create new release
+	@$(KUSTOMIZE) build konflux/operator/release \
+	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_BUILDS_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_BUILDS_VERSION)"' \
 	| $(KUBECTL) apply -f -
 
-check-env:
-ifndef OPENSHIFT_BUILD_VERSION
-	$(error OPENSHIFT_BUILD_VERSION environment variable is not set)
+operator-check-env:
+ifndef OPENSHIFT_BUILDS_VERSION
+	$(error OPENSHIFT_BUILDS_VERSION environment variable is not set)
+endif
+
+
+.PHONY: catalog-setup
+catalog-setup: ## Create new release setup
+	@$(KUSTOMIZE) build konflux/catalog/setup \
+	| $(KUBECTL) apply -f -
+
+.PHONY: catalog-release
+catalog-release: catalog-check-env
+OPENSHIFT_VERSION_NAME := $(shell echo $(OPENSHIFT_VERSION) | sed 's/\./-/g')
+catalog-release: ## Create new release
+	@$(KUSTOMIZE) build konflux/catalog/release \
+	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_VERSION)"' \
+	| $(KUBECTL) apply -f -
+
+catalog-check-env:
+ifndef OPENSHIFT_VERSION
+	$(error OPENSHIFT_VERSION environment variable is not set)
 endif
