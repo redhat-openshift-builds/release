@@ -23,14 +23,14 @@ $(KUSTOMIZE): $(LOCALBIN)
 
 .PHONY: operator-setup
 operator-setup: ## Create new release setup
-	@$(KUSTOMIZE) build konflux/operator/setup \
+	@$(KUSTOMIZE) build operator/setup \
 	| $(KUBECTL) apply -f -
 
 .PHONY: operator-release
 operator-release: operator-check-env
 OPENSHIFT_BUILDS_VERSION_NAME := $(shell echo $(OPENSHIFT_BUILDS_VERSION) | sed 's/\./-/g')
 operator-release: ## Create new release
-	@$(KUSTOMIZE) build konflux/operator/release \
+	@$(KUSTOMIZE) build operator/release \
 	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_BUILDS_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_BUILDS_VERSION)"' \
 	| $(KUBECTL) apply -f -
 
@@ -42,14 +42,14 @@ endif
 
 .PHONY: catalog-setup
 catalog-setup: ## Create new release setup
-	@$(KUSTOMIZE) build konflux/catalog/setup \
+	@$(KUSTOMIZE) build catalog/setup \
 	| $(KUBECTL) apply -f -
 
 .PHONY: catalog-release
 catalog-release: catalog-check-env
 OPENSHIFT_VERSION_NAME := $(shell echo $(OPENSHIFT_VERSION) | sed 's/\./-/g')
 catalog-release: ## Create new release
-	@$(KUSTOMIZE) build konflux/catalog/release \
+	@$(KUSTOMIZE) build catalog/release \
 	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_VERSION)"' \
 	| $(KUBECTL) apply -f -
 
