@@ -1,15 +1,37 @@
-## Location to install dependencies to
+# Make file config
+GREEN  := $(shell tput -Txterm setaf 2)
+YELLOW := $(shell tput -Txterm setaf 3)
+WHITE  := $(shell tput -Txterm setaf 7)
+CYAN   := $(shell tput -Txterm setaf 6)
+RESET  := $(shell tput -Txterm sgr0)
+
+## Help:
+help: ## Show this help.
+	@echo ''
+	@echo 'Usage:'
+	@echo '  ${YELLOW}make${RESET} ${GREEN}<target>${RESET}'
+	@echo ''
+	@echo 'Targets:'
+	@awk 'BEGIN {FS = ":.*?## "} { \
+		if (/^[a-zA-Z_-]+:.*?##.*$$/) {printf "    ${YELLOW}%-20s${GREEN}%s${RESET}\n", $$1, $$2} \
+		else if (/^## .*$$/) {printf "  ${CYAN}%s${RESET}\n", substr($$1,4)} \
+		}' $(MAKEFILE_LIST)
+
+# Location to install dependencies to
 LOCALBIN ?= $(shell pwd)/bin
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
-## Tool Binaries
+# Tool Binaries
 KUBECTL ?= kubectl
 YQ ?= yq
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 
-## Tool Versions
+# Tool Versions
 KUSTOMIZE_VERSION ?= v5.3
+
+# Application version
+VERSION_NAME := $(shell echo $(VERSION) | sed 's/\./-/g')
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary. If wrong version is installed, it will be removed before downloading.
@@ -21,39 +43,38 @@ $(KUSTOMIZE): $(LOCALBIN)
 	test -s $(LOCALBIN)/kustomize || GOBIN=$(LOCALBIN) GO111MODULE=on go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
 
-.PHONY: operator-setup
-operator-setup: ## Create new release setup
+.PHONY: release-template
+release-template: ## Create release template for catalog and operator
 	@$(KUSTOMIZE) build operator/setup \
 	| $(KUBECTL) apply -f -
 
-.PHONY: operator-release
-operator-release: operator-check-env
-OPENSHIFT_BUILDS_VERSION_NAME := $(shell echo $(OPENSHIFT_BUILDS_VERSION) | sed 's/\./-/g')
-operator-release: ## Create new release
+#	@$(KUSTOMIZE) build catalog/setup \
+#	| $(KUBECTL) apply -f -
+
+.PHONY: release-opeartor
+release-operator: check-parameter
+release-operator: ## Create new operator release
 	@$(KUSTOMIZE) build operator/release \
-	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_BUILDS_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_BUILDS_VERSION)"' \
+	| $(YQ) '.metadata.name += "-"+"$(VERSION_NAME)", .spec.template.values[0].value = "$(VERSION)"' \
 	| $(KUBECTL) apply -f -
 
-operator-check-env:
-ifndef OPENSHIFT_BUILDS_VERSION
-	$(error OPENSHIFT_BUILDS_VERSION environment variable is not set)
+check-parameter:
+ifndef VERSION
+	$(error VERSION parameter not provided)
 endif
 
-
-.PHONY: catalog-setup
-catalog-setup: ## Create new release setup
-	@$(KUSTOMIZE) build catalog/setup \
-	| $(KUBECTL) apply -f -
-
-.PHONY: catalog-release
-catalog-release: catalog-check-env
+.PHONY: release-catalog
+release-catalog: check-parameter-catalog
 OPENSHIFT_VERSION_NAME := $(shell echo $(OPENSHIFT_VERSION) | sed 's/\./-/g')
-catalog-release: ## Create new release
+release-catalog: ## Create new catalog release
 	@$(KUSTOMIZE) build catalog/release \
 	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_VERSION)"' \
 	| $(KUBECTL) apply -f -
 
-catalog-check-env:
+check-parameter-catalog:
 ifndef OPENSHIFT_VERSION
-	$(error OPENSHIFT_VERSION environment variable is not set)
+	$(error OPENSHIFT_VERSION parameter not provided)
 endif
+
+#.PHONY: create-snapshot
+#release-catalog: ## Create override snapshot

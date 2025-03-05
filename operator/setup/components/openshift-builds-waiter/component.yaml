@@ -15,4 +15,4 @@
         git:
           dockerfileUrl: .konflux/waiter/Dockerfile
           revision: 'builds-{{.version}}'
-          url: https://github.com/redhat-openshift-builds/shipwright-io-build.git
+          url: https://github.com/redhat-openshift-builds/shipwright-io.git

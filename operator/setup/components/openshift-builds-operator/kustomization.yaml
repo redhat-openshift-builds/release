@@ -10,3 +10,7 @@ patches:
       kind: ProjectDevelopmentStreamTemplate
       name: openshift-builds
     path: imagerepository.yaml
+#  - target:
+#      kind: ProjectDevelopmentStreamTemplate
+#      name: openshift-builds
+#    path: integrationtestscenario.yaml
