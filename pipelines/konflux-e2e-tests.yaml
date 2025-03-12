@@ -14,7 +14,7 @@ spec:
       type: string
     - description: Namespace where the the Operator bundle will be deployed.
       name: NAMESPACE
-      default: openshift-builds
+      default: default
       type: string
   tasks:
     - name: parse-metadata
@@ -146,6 +146,8 @@ spec:
               - bundle
               - --namespace
               - "$(params.namespace)"
+              - --timeout
+              - "10m0s"
               - "$(params.bundleImage)"
     - name: e2e-test
       description: Placeholder task that prints the Snapshot and outputs standard TEST_OUTPUT
@@ -195,4 +197,83 @@ spec:
               #!/usr/bin/env bash
               set -ex -u -o pipefail
               
-              oc get all -n openshift-builds
+              NAMESPACE="default" # using default since openshift-builds NS is not available
+              DEPLOYMENTS=("openshift-builds-operator" "openshift-pipelines-operator" "shipwright-build-controller" "shipwright-build-webhook" "tekton-operator-webhook")
+              BUILDS=("buildah-golang-buildrun")
+
+              oc get all -n $NAMESPACE
+              # sleep for 5 minutes, give deployments time to get ready
+              sleep 300
+              oc get all -n $NAMESPACE
+              for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+                  oc wait deployment "$DEPLOYMENT" --namespace="$NAMESPACE" --for="condition=available" --timeout="180s"
+              done
+
+              echo "All specified deployments are running and ready."
+
+              # Check running builds
+              oc apply -f - <<EOF
+              apiVersion: shipwright.io/v1beta1
+              kind: Build
+              metadata:
+                name: buildah-golang-build
+              spec:
+                source:
+                  type: Git
+                  git:
+                    url: https://github.com/redhat-openshift-builds/samples
+                  contextDir: buildah-build
+                strategy:
+                  name: buildah
+                  kind: ClusterBuildStrategy
+                paramValues:
+                - name: dockerfile
+                  value: Dockerfile
+                output:
+                  image: ttl.sh/build-examples-golang:30m
+              EOF
+
+              oc apply -f - <<EOF
+              apiVersion: shipwright.io/v1beta1
+              kind: BuildRun
+              metadata:
+                name: buildah-golang-buildrun
+              spec:
+                build:
+                  name: buildah-golang-build
+              EOF
+
+              # Wait for builds to succeed (with a 10-minute timeout)
+              TIMEOUT=600  # 10 minutes
+              INTERVAL=30   # Check every 30 seconds
+
+              for BUILD in "${BUILDS[@]}"; do
+                  START_TIME=$(date +%s)
+
+                  while true; do
+                      CURRENT_TIME=$(date +%s)
+                      ELAPSED=$((CURRENT_TIME - START_TIME))
+
+                      if [[ $ELAPSED -ge $TIMEOUT ]]; then
+                          echo "Timeout waiting for build $BUILD. Exiting..."
+                          exit 1
+                      fi
+
+                      STATUS=$(kubectl get buildrun "$BUILD" -n "$NAMESPACE" -o jsonpath="{.status.conditions[?(@.type=='Succeeded')].status}" 2>/dev/null || echo "Unknown")
+
+                      if [[ "$STATUS" == "True" ]]; then
+                          echo "Build $BUILD succeeded!"
+                          break
+                      elif [[ "$STATUS" == "False" ]]; then
+                          echo "Build $BUILD failed!"
+                          exit 1
+                      else
+                          echo "Waiting for build $BUILD to complete... ($ELAPSED/$TIMEOUT seconds)"
+                          sleep $INTERVAL
+                      fi
+                  done
+              done
+
+              echo "All builds completed successfully."
+
+
