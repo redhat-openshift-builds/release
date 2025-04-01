@@ -1,0 +1,56 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/redhat-openshift-builds/release?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "pull_request" &&
+      target_branch == "main" &&
+      (
+        files.all.exists(x, x.matches('pipelines/konflux-build.yaml')) ||
+        files.all.exists(x, x.matches('.tekton/bundle-build.yaml'))
+      )
+  labels:
+    appstudio.openshift.io/application: openshift-builds-release
+    appstudio.openshift.io/component: bundle-build
+    pipelines.appstudio.openshift.io/type: build
+  name: bundle-build
+  namespace: rh-openshift-builds-tenant
+spec:
+  displayName: "Bundle Build Test"
+  params:
+  - name: git-url
+    value: https://github.com/redhat-openshift-builds/operator.git
+  - name: revision
+    value: main
+  - name: output-image
+    value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/bundle-build:{{revision}}
+  - name: image-expires-after
+    value: 1d
+  - name: dockerfile
+    value: bundle.Dockerfile
+  - name: build-source-image
+    value: "true"
+  - name: hermetic
+    value: "true"
+  - name: prefetch-input
+    value: '{"packages": [{"type": "gomod"}]}'
+  pipelineRef:
+    resolver: git
+    params:
+      - name: url
+        value: https://github.com/redhat-openshift-builds/release.git
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: /pipelines/konflux-build-multi-platform.yaml
+  taskRunTemplate: {}
+  workspaces:
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'
+status: {}
