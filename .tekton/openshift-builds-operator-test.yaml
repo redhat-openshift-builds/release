@@ -13,6 +13,7 @@ metadata:
       target_branch == "main" &&
       (
         files.all.exists(x, x.matches('pipelines/konflux-build-multi-platform.yaml')) ||
+        files.all.exists(x, x.matches('tasks/unit-test.yaml')) ||
         files.all.exists(x, x.matches('.tekton/openshift-builds-operator-test.yaml'))
       )
   labels:
@@ -44,6 +45,15 @@ spec:
       - linux/arm64
   - name: prefetch-input
     value: '{"packages": [{"type": "gomod"}]}'
+  - name: run-unit-test
+    value: "true"
+  - name: unit-test-url
+    value: '{{source_url}}'
+  - name: unit-test-revision
+    value: '{{revision}}'
+  - name: unit-test-command
+    value: "make test"
+#    value: "go test $(go list ./... | grep -v /e2e) -coverprofile cover.out -v -ginkgo.v"
   pipelineRef:
     name: konflux-build-multi-platform
   taskRunTemplate: {}
