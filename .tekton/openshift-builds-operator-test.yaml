@@ -12,39 +12,37 @@ metadata:
       target_branch == "main" &&
       (
         files.all.exists(x, x.matches('pipelines/konflux-build-multi-platform.yaml')) ||
-        files.all.exists(x, x.matches('.tekton/operand-build.yaml'))
+        files.all.exists(x, x.matches('.tekton/openshift-builds-operator-test.yaml'))
       )
   labels:
-    appstudio.openshift.io/application: openshift-builds-release
-    appstudio.openshift.io/component: operand-build
+    appstudio.openshift.io/application: openshift-builds-test
+    appstudio.openshift.io/component: openshift-builds-operator-test
     pipelines.appstudio.openshift.io/type: build
-  name: operand-build
+  name: openshift-builds-operator-test
   namespace: rh-openshift-builds-tenant
 spec:
-  displayName: "Operand Build Test"
+  displayName: "OpenShift Builds Operator Build Test"
   params:
   - name: git-url
-    value: https://github.com/redhat-openshift-builds/shipwright-io.git
+    value: https://github.com/redhat-openshift-builds/operator.git
   - name: revision
     value: main
   - name: output-image
-    value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/operand-build:{{revision}}
+    value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-test:{{revision}}
   - name: image-expires-after
     value: 1d
   - name: dockerfile
-    value: .konflux/waiter/Dockerfile
+    value: Dockerfile
   - name: build-source-image
     value: "true"
   - name: hermetic
-    value: "true"
-  - name: prefetch-dev-package-managers
     value: "true"
   - name: build-platforms
     value:
       - linux/x86_64
       - linux/arm64
   - name: prefetch-input
-    value: '{"packages": [{"type": "gomod", "path": "build"},{"type": "rpm","path": ".konflux/waiter"}]}'
+    value: '{"packages": [{"type": "gomod"}]}'
   pipelineRef:
     resolver: git
     params:
