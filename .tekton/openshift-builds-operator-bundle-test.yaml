@@ -11,34 +11,34 @@ metadata:
       event == "pull_request" &&
       target_branch == "main" &&
       (
-        files.all.exists(x, x.matches('pipelines/konflux-build-fbc.yaml')) ||
-        files.all.exists(x, x.matches('.tekton/catalog-build.yaml'))
+        files.all.exists(x, x.matches('pipelines/konflux-build.yaml')) ||
+        files.all.exists(x, x.matches('.tekton/openshift-builds-operator-bundle-test.yaml'))
       )
   labels:
-    appstudio.openshift.io/application: openshift-builds-release
-    appstudio.openshift.io/component: catalog-build
+    appstudio.openshift.io/application: openshift-builds-test
+    appstudio.openshift.io/component: openshift-builds-operator-bundle-test
     pipelines.appstudio.openshift.io/type: build
-  name: catalog-build
+  name: openshift-builds-operator-bundle-test
   namespace: rh-openshift-builds-tenant
 spec:
-  displayName: "Catalog Build Test"
+  displayName: "OpenShift Builds Operator Bundle Build Test"
   params:
-    - name: git-url
-      value: https://github.com/redhat-openshift-builds/catalog.git
-    - name: revision
-      value: main
-    - name: output-image
-      value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/catalog-build:{{revision}}
-    - name: image-expires-after
-      value: 1d
-    - name: dockerfile
-      value: Dockerfile
-    - name: path-context
-      value: fbc/4.18
-    - name: build-platforms
-      value:
-        - linux/x86_64
-        - linux/arm64
+  - name: git-url
+    value: https://github.com/redhat-openshift-builds/operator.git
+  - name: revision
+    value: main
+  - name: output-image
+    value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-bundle-test:{{revision}}
+  - name: image-expires-after
+    value: 1d
+  - name: dockerfile
+    value: bundle.Dockerfile
+  - name: build-source-image
+    value: "true"
+  - name: hermetic
+    value: "true"
+  - name: prefetch-input
+    value: '{"packages": [{"type": "gomod"}]}'
   pipelineRef:
     resolver: git
     params:
@@ -47,7 +47,7 @@ spec:
       - name: revision
         value: main
       - name: pathInRepo
-        value: /pipelines/konflux-build-fbc.yaml
+        value: /pipelines/konflux-build-multi-platform.yaml
   taskRunTemplate: {}
   workspaces:
     - name: git-auth
