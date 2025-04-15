@@ -7,6 +7,7 @@ metadata:
     build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/pipeline: "pipelines/konflux-build.yaml"
     pipelinesascode.tekton.dev/on-cel-expression: |
       event == "pull_request" &&
       target_branch == "main" &&
@@ -40,14 +41,7 @@ spec:
   - name: prefetch-input
     value: '{"packages": [{"type": "gomod"}]}'
   pipelineRef:
-    resolver: git
-    params:
-      - name: url
-        value: https://github.com/redhat-openshift-builds/release.git
-      - name: revision
-        value: main
-      - name: pathInRepo
-        value: /pipelines/konflux-build-multi-platform.yaml
+    name: konflux-build
   taskRunTemplate: {}
   workspaces:
     - name: git-auth
