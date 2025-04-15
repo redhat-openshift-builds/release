@@ -7,6 +7,7 @@ metadata:
     build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/pipeline: "pipelines/konflux-build-fbc.yaml"
     pipelinesascode.tekton.dev/on-cel-expression: |
       event == "pull_request" &&
       target_branch == "main" &&
@@ -40,14 +41,7 @@ spec:
         - linux/x86_64
         - linux/arm64
   pipelineRef:
-    resolver: git
-    params:
-      - name: url
-        value: https://github.com/redhat-openshift-builds/release.git
-      - name: revision
-        value: main
-      - name: pathInRepo
-        value: /pipelines/konflux-build-fbc.yaml
+    name: konflux-build-fbc
   taskRunTemplate: {}
   workspaces:
     - name: git-auth
