@@ -29,6 +29,17 @@ spec:
       description: Revision of the Source Repository
       name: revision
       type: string
+    - name: component
+      type: string
+      description: "Component name"
+    - name: branch
+      type: string
+    - name: repository-url
+      type: string
+    - name: test-event
+      type: string
+    - name: pull-request-number
+      type: string
     - description: Fully Qualified Output Image
       name: output-image
       type: string
@@ -196,9 +207,46 @@ spec:
           workspace: git-auth
         - name: netrc
           workspace: netrc
+    - name: sealights-instrumentation
+      runAfter:
+        - prefetch-dependencies
+      taskRef:
+        params:
+        - name: name
+          value: sealights-go-oci-ta
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-sealights-go-oci-ta:0.1@sha256:96317fb573660541cc274c324bd3efc4a2198e4fb4a7d1070f3fd59538eb9eeb
+        - name: kind
+          value: task
+        resolver: bundles
+      params:
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+        - name: component
+          value: "openshift-builds-operator"
+        - name: branch
+          value: $(params.branch)
+        - name: revision
+          value: $(params.revision)
+        - name: repository-url
+          value: $(params.repository-url)
+        - name: test-event
+          value: $(params.test-event)
+        - name: pull-request-number
+          value: $(params.pull-request-number)
+        - name: target-branch
+          value: $(params.branch)
+        - name: oci-storage
+          value: $(params.output-image).sealights.git
+      when:
+        - input: $(params.run-unit-test)
+          operator: in
+          values:
+            - "true"
     - name: unit-test
       runAfter:
         - prefetch-dependencies
+        - sealights-instrumentation
       taskRef:
         resolver: git
         params:
@@ -210,7 +258,7 @@ spec:
             value: 'tasks/unit-test.yaml'
       params:
         - name: SOURCE_ARTIFACT
-          value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
+          value: $(tasks.sealights-instrumentation.results.SOURCE_ARTIFACT)
         - name: CACHI2_ARTIFACT
           value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
         - name: TEST_COMMAND
