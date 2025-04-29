@@ -88,6 +88,26 @@ spec:
         set of values is determined by the configuration of the multi-platform-controller.
       name: build-platforms
       type: array
+    - default: "false"
+      description: Set 'true' to run unit tests
+      name: run-unit-test
+      type: string
+    - default: "https://github.com/redhat-openshift-builds/release.git"
+      description: Unit test git URL
+      name: unit-test-url
+      type: string
+    - default: "main"
+      description: Unit test git revision
+      name: unit-test-revision
+      type: string
+    - description: The command used to run the unit test
+      name: unit-test-command
+      type: string
+      default: go test ./...
+    - description: The base image used to run the unit tests
+      name: unit-test-base-image
+      type: string
+      default: brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_1.23
   results:
     - description: ""
       name: IMAGE_URL
@@ -176,6 +196,32 @@ spec:
           workspace: git-auth
         - name: netrc
           workspace: netrc
+    - name: unit-test
+      runAfter:
+        - prefetch-dependencies
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.unit-test-url)
+          - name: revision
+            value: $(params.unit-test-revision)
+          - name: pathInRepo
+            value: 'tasks/unit-test.yaml'
+      params:
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
+        - name: CACHI2_ARTIFACT
+          value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
+        - name: TEST_COMMAND
+          value: $(params.unit-test-command)
+        - name: BASE_IMAGE
+          value: $(params.unit-test-base-image)
+      when:
+        - input: $(params.run-unit-test)
+          operator: in
+          values:
+            - "true"
     - matrix:
         params:
           - name: PLATFORM
@@ -210,6 +256,7 @@ spec:
           value: "true"
       runAfter:
         - prefetch-dependencies
+        - unit-test
       taskRef:
         params:
           - name: name
