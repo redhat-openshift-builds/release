@@ -27,6 +27,8 @@ spec:
       # This path is hard coded in the cachi2.env file.
       - mountPath: /cachi2
         name: cachi2
+      - name: sealights-credentials
+        mountPath: /usr/local/sealights-credentials
     securityContext:
       # This is needed because the different steps in this Task run with different user IDs.
       runAsUser: 0
@@ -42,9 +44,14 @@ spec:
       workingDir: /var/workdir/source
       script: |
         #!/usr/bin/env sh
+        export SEALIGHTS_TOKEN
+        SEALIGHTS_TOKEN="$(cat /usr/local/sealights-credentials/token)"
         $(params.TEST_COMMAND)
   volumes:
     - name: workdir
       emptyDir: {}
     - name: cachi2
       emptyDir: {}
+    - name: sealights-credentials
+      secret:
+        secretName: sealights-credentials
