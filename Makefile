@@ -33,6 +33,10 @@ KUSTOMIZE_VERSION ?= v5.3
 # Application version
 VERSION_NAME := $(shell echo $(VERSION) | sed 's/\./-/g')
 
+.PHONE: update-pipelines
+update-pipelines: ## Update pipelines with latest task bundles
+	bash scripts/update-task-bundles.sh pipelines/*.yaml
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary. If wrong version is installed, it will be removed before downloading.
 $(KUSTOMIZE): $(LOCALBIN)
