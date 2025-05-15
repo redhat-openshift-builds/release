@@ -53,6 +53,16 @@ spec:
     value: '{{revision}}'
   - name: unit-test-command
     value: "make test"
+  - name: component
+    value: 'openshift-builds-{{ repo_name }}'
+  - name: branch
+    value: '{{ target_branch }}'
+  - name: repository-url
+    value: '{{ repo_url }}'
+  - name: test-event
+    value: '{{ event_type }}'
+  - name: pull-request-number
+    value: '{{ pull_request_number }}'
 #    value: "go test $(go list ./... | grep -v /e2e) -coverprofile cover.out -v -ginkgo.v"
   pipelineRef:
     name: konflux-build-multi-platform
