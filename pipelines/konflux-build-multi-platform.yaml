@@ -31,15 +31,20 @@ spec:
       type: string
     - name: component
       type: string
+      default: ""
       description: "Component name"
     - name: branch
       type: string
+      default: ""
     - name: repository-url
       type: string
+      default: ""
     - name: test-event
       type: string
+      default: ""
     - name: pull-request-number
       type: string
+      default: ""
     - description: Fully Qualified Output Image
       name: output-image
       type: string
