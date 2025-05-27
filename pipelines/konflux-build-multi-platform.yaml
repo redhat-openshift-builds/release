@@ -104,6 +104,10 @@ spec:
         set of values is determined by the configuration of the multi-platform-controller.
       name: build-platforms
       type: array
+    - default: "true"
+      description: Whether to append the platform string to the end of the build image tag
+      name: image-append-platform
+      type: string
     - default: "false"
       description: Set 'true' to run unit tests
       name: run-unit-test
@@ -123,7 +127,7 @@ spec:
     - description: The base image used to run the unit tests
       name: unit-test-base-image
       type: string
-      default: brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_1.23
+      default: registry.redhat.io/ubi9/go-toolset:1.23
   results:
     - description: ""
       name: IMAGE_URL
@@ -306,7 +310,7 @@ spec:
         - name: CACHI2_ARTIFACT
           value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
         - name: IMAGE_APPEND_PLATFORM
-          value: "true"
+          value: $(params.image-append-platform)
       runAfter:
         - prefetch-dependencies
         - unit-test
