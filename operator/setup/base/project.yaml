@@ -1,8 +1,0 @@
-apiVersion: projctl.konflux.dev/v1beta1
-kind: Project
-metadata:
-  name: openshift-builds
-spec:
-  displayName: "Red Hat OpenShift Builds"
-  description: |
-    Red Hat OpenShift Builds.

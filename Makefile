@@ -47,38 +47,5 @@ $(KUSTOMIZE): $(LOCALBIN)
 	test -s $(LOCALBIN)/kustomize || GOBIN=$(LOCALBIN) GO111MODULE=on go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
 
-.PHONY: release-template
-release-template: ## Create release template for catalog and operator
-	@$(KUSTOMIZE) build operator/setup \
-	| $(KUBECTL) apply -f -
-
-#	@$(KUSTOMIZE) build catalog/setup \
-#	| $(KUBECTL) apply -f -
-
-.PHONY: release-opeartor
-release-operator: check-parameter
-release-operator: ## Create new operator release
-	@$(KUSTOMIZE) build operator/release \
-	| $(YQ) '.metadata.name += "-"+"$(VERSION_NAME)", .spec.template.values[0].value = "$(VERSION)"' \
-	| $(KUBECTL) apply -f -
-
-check-parameter:
-ifndef VERSION
-	$(error VERSION parameter not provided)
-endif
-
-.PHONY: release-catalog
-release-catalog: check-parameter-catalog
-OPENSHIFT_VERSION_NAME := $(shell echo $(OPENSHIFT_VERSION) | sed 's/\./-/g')
-release-catalog: ## Create new catalog release
-	@$(KUSTOMIZE) build catalog/release \
-	| $(YQ) '.metadata.name += "-"+"$(OPENSHIFT_VERSION_NAME)", .spec.template.values[0].value = "$(OPENSHIFT_VERSION)"' \
-	| $(KUBECTL) apply -f -
-
-check-parameter-catalog:
-ifndef OPENSHIFT_VERSION
-	$(error OPENSHIFT_VERSION parameter not provided)
-endif
-
 #.PHONY: create-snapshot
 #release-catalog: ## Create override snapshot
