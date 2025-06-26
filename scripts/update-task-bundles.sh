@@ -26,6 +26,6 @@ for old_ref in ${OLD_REFS}; do
     [[ $new_ref == "$old_ref" ]] && continue
     echo "New digest found! $new_ref"
     for file in $FILES; do
-        sed -i "s/${old_ref}/${new_ref}/g" "$file"
+        sed -i "s#${old_ref}#${new_ref}#g" "$file"
     done
 done
