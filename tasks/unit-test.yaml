@@ -19,7 +19,7 @@ spec:
     - description: The Go base image used to run the unit tests
       name: BASE_IMAGE
       type: string
-      default: brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_1.23
+      default: registry.redhat.io/ubi9/go-toolset:1.24
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir
