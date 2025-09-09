@@ -1,0 +1,397 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: e2e-openshift-builds
+spec:
+  description: |
+    An integration test which provisions an ephemeral Hypershift cluster and deploys an Operator
+    bundle from a Konflux snapshot.
+  params:
+    - description: Snapshot of the application
+      name: SNAPSHOT
+      default: '{"components": [{"name":"test-app", "containerImage": "quay.io/example/repo:latest"}]}'
+      type: string
+    - description: Namespace where the the Operator bundle will be deployed.
+      name: NAMESPACE
+      default: default
+      type: string
+    - description: Operator 
+  tasks:
+    - name: parse-metadata
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/integration-examples
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: tasks/test_metadata.yaml
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+    - name: provision-eaas-space
+      runAfter:
+        - parse-metadata
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/eaas-provision-space/0.1/eaas-provision-space.yaml
+      params:
+        - name: ownerName
+          value: $(context.pipelineRun.name)
+        - name: ownerUid
+          value: $(context.pipelineRun.uid)
+    - name: provision-cluster
+      runAfter:
+        - provision-eaas-space
+      taskSpec:
+        results:
+          - name: clusterName
+            value: "$(steps.create-cluster.results.clusterName)"
+        steps:
+          - name: get-supported-versions
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-supported-ephemeral-cluster-versions/0.1/eaas-get-supported-ephemeral-cluster-versions.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+          - name: pick-version
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-latest-openshift-version-by-prefix/0.1/eaas-get-latest-openshift-version-by-prefix.yaml
+            params:
+              - name: prefix
+                value: "$(steps.get-supported-versions.results.versions[0])."
+          - name: create-cluster
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-create-ephemeral-cluster-hypershift-aws/0.1/eaas-create-ephemeral-cluster-hypershift-aws.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: version
+                value: "$(steps.pick-version.results.version)"
+              - name: instanceType
+                value: m5.2xlarge
+              - name: imageContentSources
+                value: |
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-rhel9-operator
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-operator-bundle
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-bundle
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-controller-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-controller
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-image-processing-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-processing
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-image-bundler-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-bundler
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-git-cloner-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-git-cloner
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-waiters-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-waiter
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-webhook-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-webhook
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource
+                      - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-webhook-rhel9
+                        mirrors:
+                          - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource-webhook
+    - name: clone-repository
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.revision)
+        - name: ociStorage
+          value: $(params.output-image).git
+        - name: ociArtifactExpiresAfter
+          value: $(params.image-expires-after)
+      runAfter:
+        - provision-eaas-space
+      taskRef:
+        params:
+          - name: name
+            value: git-clone-oci-ta
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.1@sha256:d35e5d501cb5f5f88369511f76249857cb5ac30250e1dcf086939321964ff6b9
+          - name: kind
+            value: task
+        resolver: bundles
+      workspaces:
+        - name: basic-auth
+          workspace: git-auth
+    - name: patch-csv
+      runAfter:
+        - clone-repository
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/run-script-oc-ta/0.1/run-script-oc-ta.yaml
+      workspaces:
+          - name: git-basic-auth
+            workspace: git-auth
+      params:
+        - name: ociStorage
+          value: $(params.output-image).git
+        - name: SCRIPT_RUNNER_IMAGE
+          value: registry.redhat.io/ubi9@sha256:e5ab898b4f3e91e31b4d202e92b4ca409ac18c2de77c4813807b3761332bf556
+        - name: SCRIPT
+          value: ls
+    - name: build-images
+      params:
+        - name: IMAGE
+          value: $(params.output-image)
+        - name: DOCKERFILE
+          value: $(params.dockerfile)
+        - name: CONTEXT
+          value: $(params.path-context)
+        - name: HERMETIC
+          value: $(params.hermetic)
+        - name: PREFETCH_INPUT
+          value: $(params.prefetch-input)
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.image-expires-after)
+        - name: COMMIT_SHA
+          value: $(tasks.clone-repository.results.commit)
+        - name: BUILD_ARGS
+          value:
+            - $(params.build-args[*])
+        - name: BUILD_ARGS_FILE
+          value: $(params.build-args-file)
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
+        - name: CACHI2_ARTIFACT
+          value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
+        - name: IMAGE_APPEND_PLATFORM
+          value: $(params.image-append-platform)
+      runAfter:
+        - patch-csv
+      taskRef:
+        params:
+          - name: name
+            value: buildah-remote-oci-ta
+          - name: bundle
+            value: quay.io/konflux-ci/tekton-catalog/task-buildah-remote-oci-ta:0.4@sha256:01683db105fe4e6577c6df87686588bfbf0949cd40f8cb01d69c2ad834e9b9cf
+          - name: kind
+            value: task
+        resolver: bundles
+    - name: deploy-operator
+      runAfter:
+        - provision-cluster
+        - patch-csv
+      params:
+        - name: bundleImage
+          value: "$(tasks.parse-metadata.results.component-container-image)"
+        - name: namespace
+          value: "$(params.NAMESPACE)"
+      taskSpec:
+        params:
+          - name: bundleImage
+            type: string
+          - name: namespace
+            type: string
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: operator-sdk-run-bundle
+            image: quay.io/operator-framework/operator-sdk:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            args:
+              - run
+              - bundle
+              - --namespace
+              - "$(params.namespace)"
+              - --timeout
+              - "10m0s"
+              - "$(params.bundleImage)"
+    - name: e2e-test
+      description: Placeholder task that prints the Snapshot and outputs standard TEST_OUTPUT
+      runAfter:
+        - deploy-operator
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        results:
+          - name: TEST_OUTPUT
+            description: Test output
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: e2e
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+
+              # TODO: remove this hack for getting cluster credentials for debugging
+              cat /credentials/cluster-*-password
+              
+              NAMESPACE="default" # using default since openshift-builds NS is not available
+              DEPLOYMENTS=("openshift-builds-operator" "openshift-pipelines-operator" "shipwright-build-controller" "shipwright-build-webhook" "tekton-operator-webhook" "shared-resource-csi-driver-webhook")
+              BUILDS=("buildah-golang-buildrun")
+
+              oc get all -n $NAMESPACE
+              for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+                  oc wait deployment "$DEPLOYMENT" --namespace="$NAMESPACE" --for="condition=available" --timeout="180s"
+              done
+
+              echo "All specified deployments are running and ready."
+
+              # Check running builds
+              oc apply -f - <<EOF
+              apiVersion: shipwright.io/v1beta1
+              kind: Build
+              metadata:
+                name: buildah-golang-build
+              spec:
+                source:
+                  type: Git
+                  git:
+                    url: https://github.com/redhat-openshift-builds/samples
+                  contextDir: buildah-build
+                strategy:
+                  name: buildah
+                  kind: ClusterBuildStrategy
+                paramValues:
+                - name: dockerfile
+                  value: Dockerfile
+                output:
+                  image: ttl.sh/build-examples-golang:30m
+              EOF
+
+              oc apply -f - <<EOF
+              apiVersion: shipwright.io/v1beta1
+              kind: BuildRun
+              metadata:
+                name: buildah-golang-buildrun
+              spec:
+                build:
+                  name: buildah-golang-build
+              EOF
+
+              # Wait for builds to succeed (with a 10-minute timeout)
+              TIMEOUT=600  # 10 minutes
+              INTERVAL=30   # Check every 30 seconds
+
+              for BUILD in "${BUILDS[@]}"; do
+                  START_TIME=$(date +%s)
+
+                  while true; do
+                      CURRENT_TIME=$(date +%s)
+                      ELAPSED=$((CURRENT_TIME - START_TIME))
+
+                      if [[ $ELAPSED -ge $TIMEOUT ]]; then
+                          echo "Timeout waiting for build $BUILD. Exiting..."
+                          exit 1
+                      fi
+
+                      STATUS=$(kubectl get buildrun "$BUILD" -n "$NAMESPACE" -o jsonpath="{.status.conditions[?(@.type=='Succeeded')].status}" 2>/dev/null || echo "Unknown")
+
+                      if [[ "$STATUS" == "True" ]]; then
+                          echo "Build $BUILD succeeded!"
+                          break
+                      elif [[ "$STATUS" == "False" ]]; then
+                          echo "Build $BUILD failed!"
+                          exit 1
+                      else
+                          echo "Waiting for build $BUILD to complete... ($ELAPSED/$TIMEOUT seconds)"
+                          sleep $INTERVAL
+                      fi
+                  done
+              done
+
+              echo "All builds completed successfully."
+
+
