@@ -128,7 +128,7 @@ spec:
       name: unit-test-base-image
       type: string
       default: registry.redhat.io/ubi9/go-toolset:1.24
-    - default: "true"
+    - default: "false"
       description: Set 'true' to enable sealights
       name: enable-sealights
       type: string
@@ -263,7 +263,7 @@ spec:
     - name: unit-test
       runAfter:
         - prefetch-dependencies
-        - sealights-instrumentation
+        # - sealights-instrumentation
       taskRef:
         resolver: git
         params:
@@ -275,7 +275,7 @@ spec:
             value: 'tasks/unit-test.yaml'
       params:
         - name: SOURCE_ARTIFACT
-          value: $(tasks.sealights-instrumentation.results.SOURCE_ARTIFACT)
+          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
         - name: CACHI2_ARTIFACT
           value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
         - name: TEST_COMMAND
