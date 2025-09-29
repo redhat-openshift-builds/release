@@ -71,6 +71,10 @@ spec:
     description: Path to a file with build arguments for buildah, see https://www.mankier.com/1/buildah-build#--build-arg-file
     name: build-args-file
     type: string
+  - default: docker
+    description: The format for the resulting image's mediaType. Valid values are oci (default) or docker.
+    name: buildah-format
+    type: string
   results:
   - description: ""
     name: IMAGE_URL
@@ -204,6 +208,8 @@ spec:
       value:
       - $(tasks.generate-labels.results.labels[*])
       - "short-commit=$(tasks.clone-repository.results.short-commit)"
+    - name: BUILDAH_FORMAT
+      value: $(params.buildah-format)
     runAfter:
     - prefetch-dependencies
     - generate-labels
@@ -234,6 +240,8 @@ spec:
     - name: IMAGES
       value:
       - $(tasks.build-container.results.IMAGE_URL)@$(tasks.build-container.results.IMAGE_DIGEST)
+    - name: BUILDAH_FORMAT
+      value: $(params.buildah-format)
     runAfter:
     - build-container
     taskRef:

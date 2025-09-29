@@ -42,6 +42,13 @@ spec:
     - name: run-tests
       image:  $(params.BASE_IMAGE)
       workingDir: /var/workdir/source
+      resources:
+        requests:
+          memory: 1Gi
+          cpu: 1000m
+        limits:
+          memory: 2Gi
+          cpu: 2000m
       script: |
         #!/usr/bin/env sh
         export SEALIGHTS_TOKEN
