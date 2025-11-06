@@ -1,0 +1,639 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: openshift-builds-e2e-tests
+spec:
+  description: |
+    Complete E2E pipeline that provisions an ephemeral cluster and runs upstream Shipwright E2E tests
+  timeout: "1h30m"
+  params:
+    - description: Git revision (branch/tag/commit) to test
+      name: TEST_REPO_REVISION
+      default: "main"
+      type: string
+    - description: Path to e2e tests within the repository
+      name: TEST_PATH
+      default: "test/e2e/v1beta1"
+      type: string
+    - description: Namespace where OpenShift Builds operator is installed
+      name: BUILDS_NAMESPACE
+      default: "openshift-builds"
+      type: string
+    - description: Namespace to run E2E tests in
+      name: TEST_NAMESPACE
+      default: "builds-e2e-test"
+      type: string
+    - description: URL of the upstream Shipwright repository
+      name: TEST_REPO_URL
+      default: "https://github.com/shipwright-io/build.git"
+      type: string
+    - description: URL to registry.yaml file (optional, uses inline if empty)
+      name: REGISTRY_YAML_URL
+      default: "https://github.com/shipwright-io/build/blob/main/test/data/registry.yaml"
+      type: string
+  tasks:
+    - name: setup-scc
+      taskSpec:
+        steps:
+          - name: setup-scc
+            image: registry.redhat.io/openshift4/ose-cli:latest
+            script: |
+              #!/bin/bash
+              set -euo pipefail
+              
+              echo "Applying SCC permissions for Shipwright..."
+              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-webhook || echo "Warning: Failed to bind privileged SCC to webhook"
+              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-controller || echo "Warning: Failed to bind privileged SCC to controller"
+              
+    - name: provision-eaas-space
+      runAfter:
+        - setup-scc
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/eaas-provision-space/0.1/eaas-provision-space.yaml
+      params:
+        - name: ownerName
+          value: $(context.pipelineRun.name)
+        - name: ownerUid
+          value: $(context.pipelineRun.uid)
+
+    - name: provision-cluster
+      runAfter:
+        - provision-eaas-space
+      taskSpec:
+        results:
+          - name: clusterName
+            value: "$(steps.create-cluster.results.clusterName)"
+        steps:
+          - name: get-supported-versions
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-supported-ephemeral-cluster-versions/0.1/eaas-get-supported-ephemeral-cluster-versions.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+          - name: pick-version
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-latest-openshift-version-by-prefix/0.1/eaas-get-latest-openshift-version-by-prefix.yaml
+            params:
+              - name: prefix
+                value: "$(steps.get-supported-versions.results.versions[0])."
+          - name: create-cluster
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-create-ephemeral-cluster-hypershift-aws/0.1/eaas-create-ephemeral-cluster-hypershift-aws.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: version
+                value: "$(steps.pick-version.results.version)"
+              - name: instanceType
+                value: m5.2xlarge
+              - name: fips
+                value: "true"
+
+    - name: verify-fips-enabled-on-nodes
+      description: Verify that FIPS is enabled on cluster nodes
+      runAfter:
+        - provision-cluster
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: check-fips
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              echo "Verifying FIPS compliance on cluster nodes..."
+              
+              # Get all worker nodes
+              WORKER_NODES=$(oc get nodes -l node-role.kubernetes.io/worker -o jsonpath='{.items[*].metadata.name}')
+              
+              if [ -z "$WORKER_NODES" ]; then
+                  echo "No worker nodes found. Checking all nodes..."
+                  WORKER_NODES=$(oc get nodes -o jsonpath='{.items[*].metadata.name}')
+              fi
+              
+              echo "Found nodes: $WORKER_NODES"
+              
+              # Check FIPS on each node
+              for NODE in $WORKER_NODES; do
+                  echo "Checking FIPS status on node: $NODE"
+                  
+                  # Create a debug pod to check FIPS status
+                  FIPS_STATUS=$(oc debug node/$NODE --image=quay.io/openshift-pipeline/ci:latest -- chroot /host cat /proc/sys/crypto/fips_enabled 2>/dev/null || echo "Failed to check")
+                  
+                  echo "FIPS status on $NODE: $FIPS_STATUS"
+                  
+                  if [ "$FIPS_STATUS" = "1" ]; then
+                      echo "✓ Node $NODE has FIPS enabled"
+                  elif [ "$FIPS_STATUS" = "0" ]; then
+                      echo "✗ Node $NODE has FIPS disabled"
+                      exit 1
+                  else
+                      echo "✗ Failed to check FIPS status on node $NODE: $FIPS_STATUS"
+                      exit 1
+                  fi
+              done
+              
+              echo "✓ All nodes have FIPS enabled"
+
+    - name: install-openshift-pipelines
+      runAfter:
+        - verify-fips-enabled-on-nodes
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: install-pipelines
+            image: registry.redhat.io/openshift4/ose-cli:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              echo "Installing OpenShift Pipelines operator..."
+              oc apply -f - <<EOF
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: Subscription
+              metadata:
+                name: openshift-pipelines-operator
+                namespace: openshift-operators
+              spec:
+                channel: latest
+                name: openshift-pipelines-operator-rh
+                source: redhat-operators
+                sourceNamespace: openshift-marketplace
+              EOF
+              
+              echo "Waiting for OpenShift Pipelines operator to be ready..."
+              sleep 120
+              
+              # Wait for key deployments
+              DEPLOYMENTS=("openshift-pipelines-operator" "tekton-operator-webhook")
+              for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+                echo "Waiting for deployment: $DEPLOYMENT"
+                oc wait deployment "$DEPLOYMENT" --namespace="openshift-operators" --for="condition=available" --timeout="300s" || echo "Deployment $DEPLOYMENT may need more time"
+              done
+              
+              echo "OpenShift Pipelines installed successfully"
+
+    - name: run-e2e-tests
+      description: Run upstream Shipwright e2e tests on the provisioned cluster
+      runAfter:
+        - install-openshift-pipelines
+      params:
+        - name: BUILDS_NAMESPACE
+          value: $(params.BUILDS_NAMESPACE)
+        - name: TEST_NAMESPACE
+          value: $(params.TEST_NAMESPACE)
+        - name: TEST_REPO_URL
+          value: $(params.TEST_REPO_URL)
+        - name: TEST_REPO_REVISION
+          value: $(params.TEST_REPO_REVISION)
+        - name: TEST_PATH
+          value: $(params.TEST_PATH)
+        - name: REGISTRY_YAML_URL
+          value: $(params.REGISTRY_YAML_URL)
+      taskSpec:
+        params:
+          - name: BUILDS_NAMESPACE
+            type: string
+          - name: TEST_NAMESPACE
+            type: string
+          - name: TEST_REPO_URL
+            type: string
+          - name: TEST_REPO_REVISION
+            type: string
+          - name: TEST_PATH
+            type: string
+          - name: REGISTRY_YAML_URL
+            type: string
+        volumes:
+          - name: credentials
+            emptyDir: { }
+          - name: workspace
+            emptyDir: {}
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+
+          - name: git-clone
+            image: quay.io/openshift-pipeline/ci:latest
+            workingDir: /workspace
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+              - name: workspace
+                mountPath: /workspace
+            script: |
+              #!/bin/bash
+              set -euo pipefail
+              
+              echo "Cloning upstream Shipwright repository"              
+              git clone $(params.TEST_REPO_URL) shipwright-build
+              cd shipwright-build
+              git checkout $(params.TEST_REPO_REVISION)            
+              echo "Successfully cloned repository"
+              ls -la
+
+          - name: run-ginkgo-tests
+            image: quay.io/openshift-pipeline/ci:latest
+            workingDir: /workspace
+            env:
+              - name: HOME
+                value: /tmp
+              - name: GOPATH
+                value: /tmp/go
+              - name: GOCACHE
+                value: /tmp/.cache
+              - name: PATH
+                value: /tmp/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+              - name: TEST_IMAGE_REPO_INSECURE
+                value: "true"
+              - name: REGISTRY_INSECURE
+                value: "true"
+              - name: INSECURE_SKIP_TLS_VERIFY
+                value: "true"
+              - name: GODEBUG
+                value: "x509ignoreCN=0"
+              - name: SSL_VERIFY
+                value: "false"
+              - name: CURL_INSECURE
+                value: "true"
+              - name: REGISTRY_HTTP_TLS_INSECURE
+                value: "true"
+              - name: CNB_INSECURE_REGISTRIES
+                value: "registry.registry.svc.cluster.local:5000"
+              - name: CNB_REGISTRY_AUTH_SKIP_TLS
+                value: "true"
+              - name: CNB_SKIP_TLS_VERIFY
+                value: "true"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+              - name: workspace
+                mountPath: /workspace
+            script: |
+              #!/bin/bash
+              set -euo pipefail
+              
+              echo "Setting up test environment"
+              
+              # Ensure Go bin directory exists and is in PATH
+              mkdir -p /tmp/go/bin
+              export PATH="/tmp/go/bin:$PATH"
+              
+              echo "Installing matching Ginkgo version"
+              cd /workspace/shipwright-build
+              UPSTREAM_GINKGO_VERSION=$(grep github.com/onsi/ginkgo/v2 go.mod | cut -d' ' -f2 || echo "latest")
+              if [ "$UPSTREAM_GINKGO_VERSION" != "latest" ]; then
+                echo "Installing Ginkgo version: $UPSTREAM_GINKGO_VERSION"
+                go install github.com/onsi/ginkgo/v2/ginkgo@$UPSTREAM_GINKGO_VERSION
+              else
+                echo "Installing latest Ginkgo version"
+                go install github.com/onsi/ginkgo/v2/ginkgo@latest
+              fi
+              
+              echo "Verifying Ginkgo installation..."
+              which ginkgo
+              ginkgo version
+              
+              echo "Downloading Go dependencies from upstream module..."
+              go mod download
+
+              echo "Applying .generate workaround: Forcing tests to use 'pipeline' ServiceAccount"
+              find . -type f -name "*_test.go" -exec sed -i 's/\.generate/pipeline/g' {} +
+              echo "Workaround applied. All BuildRuns will use 'pipeline' SA"
+              
+              echo "Applying image URL format fixes for OpenShift registry"
+              find . -type f -name "*_test.go" -exec sed -i 's|fmt\.Sprintf("%s/%s:latest", testImageRepo, .*)|fmt.Sprintf("%s:%s", testImageRepo, name)|g' {} +
+              find . -type f -name "*_test.go" -exec sed -i 's|testImageRepo + "/" + .* + ":latest"|testImageRepo + ":" + name|g' {} +
+              find . -type f -name "*_test.go" -exec sed -i 's|%s/%s:latest|%s:%s|g' {} +
+              echo "Image URL fixes applied"
+              
+              # Fix hardcoded localhost replacement in test framework
+              find . -path "./test/utils/*/image.go" -exec sed -i 's|return strings\.Replace(image, "registry\.registry\.svc\.cluster\.local", "localhost", 1)|return image|g' {} \;
+              find . -path "./test/utils/*/image.go" -exec sed -i '/^[[:space:]]*"strings"$/d' {} \;
+                            
+              echo "Deploying test registry"
+              if [ -n "$(params.REGISTRY_YAML_URL)" ]; then
+                echo "Using external registry.yaml from: $(params.REGISTRY_YAML_URL)"
+                curl -sSL "$(params.REGISTRY_YAML_URL)" | oc apply -f - || echo "Failed to apply external registry.yaml, falling back to inline"
+              fi
+              
+              # Check if registry deployment exists, deploy inline if not
+              if ! oc get deployment registry -n registry >/dev/null 2>&1; then
+                echo "Deploying inline registry..."
+                oc apply -f - <<EOF
+              ---
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: registry
+              
+              ---
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: registry
+                namespace: registry
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: registry
+                template:
+                  metadata:
+                    labels:
+                      app: registry
+                  spec:
+                    containers:
+                      - image: registry:2
+                        name: registry
+                        imagePullPolicy: IfNotPresent
+                        env:
+                        - name: REGISTRY_STORAGE_DELETE_ENABLED
+                          value: "true"
+                        ports:
+                          - containerPort: 5000
+                        resources:
+                          requests:
+                            cpu: 100m
+                            memory: 128M
+                          limits:
+                            cpu: 100m
+                            memory: 128M
+               
+              ---
+              apiVersion: v1
+              kind: Service
+              metadata:
+                labels:
+                  app: registry
+                name: registry
+                namespace: registry
+              spec:
+                ports:
+                - name: registry
+                  port: 5000
+                  protocol: TCP
+                  targetPort: 5000
+                selector:
+                  app: registry
+                type: ClusterIP
+              EOF
+              else
+                echo "Registry deployment already exists"
+              fi
+              
+              echo "Waiting for registry deployment to be ready..."
+              oc wait --for=condition=Available --timeout=300s deployment/registry -n registry
+              echo "Test registry deployed and ready"
+                            
+              echo "Installing Shipwright deployment (v0.17.0)"
+              oc apply --filename https://github.com/shipwright-io/build/releases/download/v0.17.0/release.yaml --server-side --force-conflicts
+              
+              oc wait --for=create serviceaccount/shipwright-build-webhook -n shipwright-build --timeout=60s || true
+              oc wait --for=create serviceaccount/shipwright-build-controller -n shipwright-build --timeout=60s || true
+              
+              echo "Configuring SCC permissions for Shipwright components"
+              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-webhook || true
+              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-controller || true
+              
+              # Give deployments time to start with proper SCCs before certificate setup
+              echo "Allowing deployments to stabilize..."
+              sleep 30
+              
+              echo "Setting up webhook certificates"
+              curl --silent --location https://raw.githubusercontent.com/shipwright-io/build/v0.17.0/hack/setup-webhook-cert.sh | bash || echo "Webhook setup completed with warnings"
+              
+              echo "Waiting for webhook deployment to be ready"
+              for i in {1..3}; do
+                echo "Attempt $i: Checking webhook deployment status"
+                if oc wait --for=condition=Available --timeout=300s deployment/shipwright-build-webhook -n shipwright-build; then
+                  echo "Webhook deployment is ready"
+                  break
+                elif [ $i -eq 3 ]; then
+                  echo "Webhook deployment taking longer than expected, but continuing"
+                  oc get deployment shipwright-build-webhook -n shipwright-build || true
+                  oc get pods -n shipwright-build -l name=shp-build-webhook || true
+                  oc describe deployment shipwright-build-webhook -n shipwright-build || true
+                else
+                  echo "Retrying webhook deployment check in 30 seconds"
+                  sleep 30
+                fi
+              done
+              
+              echo "Running storage version migration"
+              curl --silent --location https://raw.githubusercontent.com/shipwright-io/build/v0.17.0/hack/storage-version-migration.sh | bash
+              
+              echo "Installing Shipwright sample strategies"
+              oc apply --filename https://github.com/shipwright-io/build/releases/download/v0.17.0/sample-strategies.yaml --server-side --force-conflicts
+              
+              echo "Waiting for Shipwright CRDs to be established"
+              oc wait --for condition=established --timeout=300s crd/clusterbuildstrategies.shipwright.io 2>/dev/null || echo "Continuing without CRD wait..."
+              
+              echo "Creating required test namespaces"
+              oc create namespace $(params.TEST_NAMESPACE) --dry-run=client -o yaml | oc apply -f -
+              echo "Test namespace created/ensured: $(params.TEST_NAMESPACE)"
+              
+              echo "Creating SCC for Shipwright builds"
+              oc apply -f - <<EOF
+              apiVersion: security.openshift.io/v1
+              kind: SecurityContextConstraints
+              metadata:
+                name: shipwright
+                annotations:
+                  kubernetes.io/description: "SCC for Shipwright Build - allows everything needed for container builds"
+              allowHostDirVolumePlugin: true
+              allowHostIPC: true
+              allowHostNetwork: true
+              allowHostPID: true
+              allowHostPorts: true
+              allowPrivilegeEscalation: true
+              allowPrivilegedContainer: true
+              allowedCapabilities:
+              - '*'
+              allowedUnsafeSysctls:
+              - '*'
+              defaultAddCapabilities: null
+              fsGroup:
+                type: RunAsAny
+              priority: 100
+              readOnlyRootFilesystem: false
+              requiredDropCapabilities: null
+              runAsUser:
+                type: RunAsAny
+              seLinuxContext:
+                type: RunAsAny
+              seccompProfiles:
+              - '*'
+              supplementalGroups:
+                type: RunAsAny
+              users:
+              - system:serviceaccount:$(params.TEST_NAMESPACE):default
+              - system:serviceaccount:$(params.TEST_NAMESPACE):pipeline
+              - system:serviceaccount:$(params.BUILDS_NAMESPACE):default
+              - system:serviceaccount:shp-e2e:default
+              - system:serviceaccount:shp-e2e:pipeline
+              groups:
+              - system:serviceaccounts:$(params.TEST_NAMESPACE)
+              - system:serviceaccounts:shp-e2e
+              - system:serviceaccounts:$(params.BUILDS_NAMESPACE)
+              volumes:
+              - '*'
+              EOF
+              
+              # Bind SCC to test service accounts
+              oc adm policy add-scc-to-group shipwright system:serviceaccounts:$(params.TEST_NAMESPACE) || true
+              oc adm policy add-scc-to-group shipwright system:serviceaccounts:shp-e2e || true
+              oc adm policy add-scc-to-group shipwright system:serviceaccounts:$(params.BUILDS_NAMESPACE) || true
+              oc adm policy add-scc-to-user shipwright system:serviceaccount:shipwright-build:shipwright-build-controller || true
+              oc adm policy add-scc-to-user shipwright system:serviceaccount:shipwright-build:shipwright-build-webhook || true
+              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-webhook || true
+              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-controller || true
+              echo "SCC permissions configured"
+              
+
+              cd /workspace
+              
+              # Create service accounts in TEST_NAMESPACE and grant them cluster-admin permissions
+              # Note: cluster-admin-rbac.yaml covers openshift-builds namespace, but E2E tests run in TEST_NAMESPACE
+              echo "Creating service accounts and RBAC in TEST_NAMESPACE..."
+              oc create serviceaccount pipeline -n $(params.TEST_NAMESPACE) --dry-run=client -o yaml | oc apply -f -
+              
+              # Grant cluster-admin to TEST_NAMESPACE service accounts  
+              oc adm policy add-cluster-role-to-user cluster-admin system:serviceaccount:$(params.TEST_NAMESPACE):default || true
+              oc adm policy add-cluster-role-to-user cluster-admin system:serviceaccount:$(params.TEST_NAMESPACE):pipeline || true
+              
+              echo "RBAC permissions configured successfully"
+                            
+              export TEST_NAMESPACE="$(params.TEST_NAMESPACE)"
+              export TEST_E2E_SERVICEACCOUNT_NAME="generated"
+              export TEST_E2E_VERIFY_TEKTONOBJECTS="false"
+              export TEST_E2E_TIMEOUT_MULTIPLIER="1"
+              export TEST_IMAGE_REPO="registry.registry.svc.cluster.local:5000/builds-e2e-test"
+              export TEST_IMAGE_REPO_PLAINHTTP="false"
+              export TEST_IMAGE_REPO_INSECURE="true"
+              
+              export REGISTRY_INSECURE="true"
+              export INSECURE_SKIP_TLS_VERIFY="true"
+              export TEST_PRIVATE_REPO="false"
+              export GOSUMDB="off"
+              export GOPROXY="direct"
+              export GODEBUG="x509ignoreCN=0,tls13=1"
+              export SKOPEO_INSECURE_POLICY="true"
+              export BUILDAH_ISOLATION="rootless"
+              export CNB_INSECURE_REGISTRIES="registry.registry.svc.cluster.local:5000"
+              export CNB_REGISTRY_AUTH_SKIP_TLS="true"
+              export CNB_SKIP_TLS_VERIFY="true"
+              
+              
+              echo "Running E2E Tests"
+              cd /workspace/shipwright-build/$(params.TEST_PATH)
+              echo "Namespace: $(params.TEST_NAMESPACE)"
+              echo "Test Path: $(params.TEST_PATH)"
+              ginkgo -v --timeout=90m --label-filter='!PipelineRun && !BuildKit' . || TEST_RESULT=$?
+
+              if [ "${TEST_RESULT:-0}" -eq 0 ]; then
+                echo "E2E tests completed successfully!"
+              else
+                echo "E2E tests failed with exit code: ${TEST_RESULT:-0}"
+                exit ${TEST_RESULT:-1}
+              fi

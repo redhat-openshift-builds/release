@@ -1,0 +1,25 @@
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: openshift-builds-e2e-tests
+  labels:
+    tekton.dev/pipeline: openshift-builds-e2e-tests
+spec:
+  pipelineRef:
+    name: openshift-builds-e2e-tests
+  params:
+    - name: BUILDS_NAMESPACE
+      value: "openshift-builds"
+    - name: TEST_NAMESPACE
+      value: "builds-e2e-test"
+    - name: TEST_REPO_URL
+      value: "https://github.com/shipwright-io/build.git"
+    - name: TEST_REPO_REVISION
+      value: "main"
+    - name: TEST_PATH
+      value: "test/e2e/v1beta1"
+  timeouts:
+    pipeline: "1h30m"
+    tasks: "1h30m"
+  serviceAccountName: pipeline
