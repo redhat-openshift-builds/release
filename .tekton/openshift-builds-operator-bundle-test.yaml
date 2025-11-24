@@ -47,7 +47,8 @@ spec:
     value: "false"
   pipelineRef:
     name: konflux-build-multi-platform
-  taskRunTemplate: {}
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-openshift-builds-operator-bundle-test
   workspaces:
     - name: git-auth
       secret:

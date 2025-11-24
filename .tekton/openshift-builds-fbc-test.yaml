@@ -42,7 +42,8 @@ spec:
         - linux/arm64
   pipelineRef:
     name: konflux-build-fbc
-  taskRunTemplate: {}
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-openshift-builds-fbc-test
   workspaces:
     - name: git-auth
       secret:
