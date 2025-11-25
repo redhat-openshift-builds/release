@@ -1,0 +1,34 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: konflux-build-e2e-pr
+  annotations:
+    pipelinesascode.tekton.dev/pipeline: "pipelines/konflux-build-and-e2e.yaml"
+  labels:
+    appstudio.openshift.io/application: openshift-builds
+    # appstudio.openshift.io/component: openshift-builds-operator-bundle-test
+    # pipelines.appstudio.openshift.io/type: build
+  namespace: rh-openshift-builds-tenant
+spec:
+  pipelineRef:
+    params:
+    - name: url
+      value: https://github.com/avinal/builds-release.git
+    - name: revision
+      value: avinal/e2e-config
+    - name: pathInRepo
+      value: /pipelines/konflux-build-and-e2e.yaml
+    resolver: git
+  serviceAccountName: build-pipeline-openshift-builds-operator
+  # workspaces:
+  #   - name: git-auth
+  #     secret:
+  #       secretName: git-auth-secret
+  #   - name: netrc
+  #     emptyDir: {}
+  # params:
+  #   - name: git-url
+  #     value: "https://github.com/hasanawad94/operator.git"    # add other required params here...
+  # taskRunSpecs:
+  #   - serviceAccountName: build-pipeline-openshift-builds-operator
+  #     pipelineTaskName: patch-csv
