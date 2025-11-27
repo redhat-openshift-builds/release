@@ -1,54 +1,22 @@
----
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: openshift-builds-e2e-tests
+  name: e2e-openshift-builds
 spec:
   description: |
-    Complete E2E pipeline that provisions an ephemeral cluster and runs upstream Shipwright E2E tests
-  timeout: "1h30m"
+    An integration test which provisions an ephemeral Hypershift cluster and deploys an Operator
+    bundle from a Konflux snapshot. Enhanced with custom rh-operator builds and auto-generated BuildRuns.
   params:
-    - description: Git revision (branch/tag/commit) to test
-      name: TEST_REPO_REVISION
-      default: "main"
+    - description: Snapshot of the application
+      name: SNAPSHOT
+      default: '{"components": [{"name":"test-app", "containerImage": "quay.io/example/repo:latest"}]}'
       type: string
-    - description: Path to e2e tests within the repository
-      name: TEST_PATH
-      default: "test/e2e/v1beta1"
-      type: string
-    - description: Namespace where OpenShift Builds operator is installed
-      name: BUILDS_NAMESPACE
-      default: "openshift-builds"
-      type: string
-    - description: Namespace to run E2E tests in
-      name: TEST_NAMESPACE
-      default: "builds-e2e-test"
-      type: string
-    - description: URL of the upstream Shipwright repository
-      name: TEST_REPO_URL
-      default: "https://github.com/shipwright-io/build.git"
-      type: string
-    - description: URL to registry.yaml file (optional, uses inline if empty)
-      name: REGISTRY_YAML_URL
-      default: "https://github.com/shipwright-io/build/blob/main/test/data/registry.yaml"
+    - description: Builds for OpenShift Version
+      name: VERSION
+      default: ""
       type: string
   tasks:
-    - name: setup-scc
-      taskSpec:
-        steps:
-          - name: setup-scc
-            image: registry.redhat.io/openshift4/ose-cli:latest
-            script: |
-              #!/bin/bash
-              set -euo pipefail
-              
-              echo "Applying SCC permissions for Shipwright..."
-              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-webhook || echo "Warning: Failed to bind privileged SCC to webhook"
-              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-controller || echo "Warning: Failed to bind privileged SCC to controller"
-              
     - name: provision-eaas-space
-      runAfter:
-        - setup-scc
       taskRef:
         resolver: git
         params:
@@ -63,7 +31,6 @@ spec:
           value: $(context.pipelineRun.name)
         - name: ownerUid
           value: $(context.pipelineRun.uid)
-
     - name: provision-cluster
       runAfter:
         - provision-eaas-space
@@ -117,7 +84,38 @@ spec:
                 value: m5.2xlarge
               - name: fips
                 value: "true"
-
+              - name: imageContentSources
+                value: |
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-rhel9-operator
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-operator-bundle
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-bundle$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-controller-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-controller$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-image-processing-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-processing$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-image-bundler-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-bundler$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-git-cloner-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-git-cloner$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-waiters-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-waiter$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-webhook-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-webhook$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-webhook-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource-webhook$(params.VERSION)
     - name: verify-fips-enabled-on-nodes
       description: Verify that FIPS is enabled on cluster nodes
       runAfter:
@@ -178,18 +176,17 @@ spec:
                   echo "FIPS status on $NODE: $FIPS_STATUS"
                   
                   if [ "$FIPS_STATUS" = "1" ]; then
-                      echo "✓ Node $NODE has FIPS enabled"
+                      echo "PASS: Node $NODE has FIPS enabled"
                   elif [ "$FIPS_STATUS" = "0" ]; then
-                      echo "✗ Node $NODE has FIPS disabled"
+                      echo "FAIL: Node $NODE has FIPS disabled"
                       exit 1
                   else
-                      echo "✗ Failed to check FIPS status on node $NODE: $FIPS_STATUS"
+                      echo "FAIL: Failed to check FIPS status on node $NODE: $FIPS_STATUS"
                       exit 1
                   fi
               done
               
-              echo "✓ All nodes have FIPS enabled"
-
+              echo "All nodes have FIPS enabled"
     - name: install-openshift-pipelines
       runAfter:
         - verify-fips-enabled-on-nodes
@@ -227,7 +224,6 @@ spec:
               #!/usr/bin/env bash
               set -ex -u -o pipefail
               
-              echo "Installing OpenShift Pipelines operator..."
               oc apply -f - <<EOF
               apiVersion: operators.coreos.com/v1alpha1
               kind: Subscription
@@ -241,54 +237,41 @@ spec:
                 sourceNamespace: openshift-marketplace
               EOF
               
-              echo "Waiting for OpenShift Pipelines operator to be ready..."
-              sleep 120
+              NAMESPACE="openshift-operators"
+              DEPLOYMENTS=(
+                  "openshift-pipelines-operator"
+                  "tekton-operator-webhook"
+              )
               
-              # Wait for key deployments
-              DEPLOYMENTS=("openshift-pipelines-operator" "tekton-operator-webhook")
+              echo "=== Waiting for OpenShift Pipelines installation ==="
+              sleep 60
+              
               for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
-                echo "Waiting for deployment: $DEPLOYMENT"
-                oc wait deployment "$DEPLOYMENT" --namespace="openshift-operators" --for="condition=available" --timeout="300s" || echo "Deployment $DEPLOYMENT may need more time"
+                  echo "=== Waiting for deployment: $DEPLOYMENT ==="
+                  
+                  if ! oc get deployment "$DEPLOYMENT" --namespace="$NAMESPACE" >/dev/null 2>&1; then
+                      echo "ERROR: Deployment $DEPLOYMENT does not exist"
+                      oc get deployments -n $NAMESPACE
+                      exit 1
+                  fi
+                  
+                  if ! oc wait deployment "$DEPLOYMENT" --namespace="$NAMESPACE" --for="condition=available" --timeout="180s"; then
+                      echo "ERROR: Deployment $DEPLOYMENT failed to become available"
+                      oc get deployment "$DEPLOYMENT" --namespace="$NAMESPACE" -o yaml
+                      exit 1
+                  fi
+                  
+                  echo "Deployment $DEPLOYMENT is available"
               done
               
               echo "OpenShift Pipelines installed successfully"
-
-    - name: run-e2e-tests
-      description: Run upstream Shipwright e2e tests on the provisioned cluster
+    - name: deploy-operator
       runAfter:
         - install-openshift-pipelines
-      params:
-        - name: BUILDS_NAMESPACE
-          value: $(params.BUILDS_NAMESPACE)
-        - name: TEST_NAMESPACE
-          value: $(params.TEST_NAMESPACE)
-        - name: TEST_REPO_URL
-          value: $(params.TEST_REPO_URL)
-        - name: TEST_REPO_REVISION
-          value: $(params.TEST_REPO_REVISION)
-        - name: TEST_PATH
-          value: $(params.TEST_PATH)
-        - name: REGISTRY_YAML_URL
-          value: $(params.REGISTRY_YAML_URL)
       taskSpec:
-        params:
-          - name: BUILDS_NAMESPACE
-            type: string
-          - name: TEST_NAMESPACE
-            type: string
-          - name: TEST_REPO_URL
-            type: string
-          - name: TEST_REPO_REVISION
-            type: string
-          - name: TEST_PATH
-            type: string
-          - name: REGISTRY_YAML_URL
-            type: string
         volumes:
           - name: credentials
             emptyDir: { }
-          - name: workspace
-            emptyDir: {}
         steps:
           - name: get-kubeconfig
             ref:
@@ -307,126 +290,376 @@ spec:
                 value: "$(tasks.provision-cluster.results.clusterName)"
               - name: credentials
                 value: credentials
-
-          - name: git-clone
-            image: quay.io/openshift-pipeline/ci:latest
-            workingDir: /workspace
+          - name: operator-bundle-install
+            image: registry.redhat.io/openshift4/ose-cli:latest
             env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
               - name: KUBECONFIG
                 value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
             volumeMounts:
               - name: credentials
                 mountPath: /credentials
-              - name: workspace
-                mountPath: /workspace
             script: |
-              #!/bin/bash
-              set -euo pipefail
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
               
-              echo "Cloning upstream Shipwright repository"              
-              git clone $(params.TEST_REPO_URL) shipwright-build
-              cd shipwright-build
-              git checkout $(params.TEST_REPO_REVISION)            
-              echo "Successfully cloned repository"
-              ls -la
-
-          - name: run-ginkgo-tests
+              echo "Installing operator-sdk and dependencies"
+              dnf -y install jq
+              export OPERATOR_SDK_VERSION=1.36.1
+              export ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n $(uname -m) ;; esac)
+              export OPERATOR_SDK_DL_URL=https://github.com/operator-framework/operator-sdk/releases/download/v${OPERATOR_SDK_VERSION}
+              curl -Lo /usr/local/bin/operator-sdk ${OPERATOR_SDK_DL_URL}/operator-sdk_linux_${ARCH}
+              chmod +x /usr/local/bin/operator-sdk
+              
+              echo "=== Extracting bundle image from snapshot ==="
+              echo "SNAPSHOT content:"
+              echo "$SNAPSHOT" | jq .
+              
+              # First try with VERSION parameter if provided
+              KONFLUX_COMPONENT_NAME=openshift-builds-operator-bundle$(params.VERSION)
+              echo "Searching for component: ${KONFLUX_COMPONENT_NAME}"
+              export BUNDLE_IMAGE="$(jq -r --arg component_name "$KONFLUX_COMPONENT_NAME" '.components[] | select(.name == $component_name) | .containerImage' <<< "$SNAPSHOT")"
+              
+              # If not found and VERSION is empty, try to find any bundle component
+              if [ -z "$BUNDLE_IMAGE" ]; then
+                  echo "Component not found with name: ${KONFLUX_COMPONENT_NAME}"
+                  echo "Trying to find any bundle component matching pattern..."
+                  export BUNDLE_IMAGE="$(jq -r '.components[] | select(.name | startswith("openshift-builds-operator-bundle")) | .containerImage' <<< "$SNAPSHOT" | head -n1)"
+              fi
+              
+              # Validate bundle image was found
+              if [ -z "$BUNDLE_IMAGE" ]; then
+                  echo "ERROR: Could not find bundle image in snapshot!"
+                  echo "Available components:"
+                  jq -r '.components[] | "  - \(.name): \(.containerImage)"' <<< "$SNAPSHOT"
+                  exit 1
+              fi
+              
+              echo "Found bundle image: ${BUNDLE_IMAGE}"
+              
+              echo "=== Installing OpenShift Builds operator ==="
+              builds_install_ns="builds-e2e-test"
+              oc create namespace ${builds_install_ns} --dry-run=client -o yaml | oc apply -f -
+              /usr/local/bin/operator-sdk run bundle --timeout=5m --namespace "${builds_install_ns}" "$BUNDLE_IMAGE" --verbose
+              
+              echo "Operator deployed successfully"
+    - name: run-e2e-tests
+      description: Clone Shipwright repo and run e2e tests against deployed operator with custom rh-operator builds
+      runAfter:
+        - deploy-operator
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: run-e2e-tests
             image: quay.io/openshift-pipeline/ci:latest
-            workingDir: /workspace
             env:
-              - name: HOME
-                value: /tmp
-              - name: GOPATH
-                value: /tmp/go
-              - name: GOCACHE
-                value: /tmp/.cache
-              - name: PATH
-                value: /tmp/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
               - name: KUBECONFIG
                 value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
-              - name: TEST_IMAGE_REPO_INSECURE
-                value: "true"
-              - name: REGISTRY_INSECURE
-                value: "true"
-              - name: INSECURE_SKIP_TLS_VERIFY
-                value: "true"
-              - name: GODEBUG
-                value: "x509ignoreCN=0"
-              - name: SSL_VERIFY
-                value: "false"
-              - name: CURL_INSECURE
-                value: "true"
-              - name: REGISTRY_HTTP_TLS_INSECURE
-                value: "true"
-              - name: CNB_INSECURE_REGISTRIES
-                value: "registry.registry.svc.cluster.local:5000"
-              - name: CNB_REGISTRY_AUTH_SKIP_TLS
-                value: "true"
-              - name: CNB_SKIP_TLS_VERIFY
-                value: "true"
+              - name: OPERATOR_NAMESPACE
+                value: "builds-e2e-test"
             volumeMounts:
               - name: credentials
                 mountPath: /credentials
-              - name: workspace
-                mountPath: /workspace
             script: |
-              #!/bin/bash
-              set -euo pipefail
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
               
-              echo "Setting up test environment"
-              
-              # Ensure Go bin directory exists and is in PATH
-              mkdir -p /tmp/go/bin
-              export PATH="/tmp/go/bin:$PATH"
-              
-              echo "Installing matching Ginkgo version"
+              # Install prerequisites
+              dnf -y install git golang jq gawk
+              curl -Lo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+              chmod +x /usr/local/bin/yq
+              go install github.com/onsi/ginkgo/v2/ginkgo@latest
+              export PATH=$PATH:$(go env GOPATH)/bin
+              # Clone Shipwright test framework
+              SHIPWRIGHT_VERSION="v0.13.0"
+              mkdir -p /workspace/shipwright-build
               cd /workspace/shipwright-build
-              UPSTREAM_GINKGO_VERSION=$(grep github.com/onsi/ginkgo/v2 go.mod | cut -d' ' -f2 || echo "latest")
-              if [ "$UPSTREAM_GINKGO_VERSION" != "latest" ]; then
-                echo "Installing Ginkgo version: $UPSTREAM_GINKGO_VERSION"
-                go install github.com/onsi/ginkgo/v2/ginkgo@$UPSTREAM_GINKGO_VERSION
-              else
-                echo "Installing latest Ginkgo version"
-                go install github.com/onsi/ginkgo/v2/ginkgo@latest
+              git init
+              git remote add origin https://github.com/shipwright-io/build.git
+              git config core.sparseCheckout true
+              cat > .git/info/sparse-checkout << EOF
+              test/
+              go.mod
+              go.sum
+              pkg/
+              EOF
+              git fetch --depth 1 origin ${SHIPWRIGHT_VERSION}
+              git checkout FETCH_HEAD
+              
+              # Clone rh-operator repository
+              mkdir -p /workspace/rh-operator
+              cd /workspace/rh-operator
+              git clone https://github.com/anchi205/rh-operator.git .
+              
+              # Check if config/shipwright/samples exists
+              if [ ! -d "config/shipwright/samples" ]; then
+                echo "ERROR: config/shipwright/samples directory not found!"
+                find . -name "*sample*" -type d 2>/dev/null || echo "No sample directories found"
+                exit 1
+              fi
+              cd /workspace/rh-operator/config/shipwright/samples
+              mkdir -p /tmp/custom-samples/builds /tmp/custom-samples/buildruns
+              
+              BUILD_FILES=$(find . -name "*.yaml" -type f | head -20)
+              if [ -z "$BUILD_FILES" ]; then
+                echo "ERROR: No build YAML files found in repository!"
+                exit 1
               fi
               
-              echo "Verifying Ginkgo installation..."
-              which ginkgo
-              ginkgo version
+              BUILD_COUNT=0
+              > /tmp/build-mapping.txt
               
-              echo "Downloading Go dependencies from upstream module..."
-              go mod download
-
-              echo "Applying .generate workaround: Forcing tests to use 'pipeline' ServiceAccount"
-              find . -type f -name "*_test.go" -exec sed -i 's/\.generate/pipeline/g' {} +
-              echo "Workaround applied. All BuildRuns will use 'pipeline' SA"
+              # Process each build file
+              for build_file in $BUILD_FILES; do
+                BUILD_COUNT=$((BUILD_COUNT + 1))
+                BASE_NAME=$(basename "$build_file" .yaml)
+                cp "$build_file" "/tmp/custom-samples/builds/${BASE_NAME}.yaml"
+                
+                BUILD_NAME=$(yq eval '.metadata.name // "custom-build-'$BUILD_COUNT'"' "$build_file")
+                STRATEGY_NAME=$(yq eval '.spec.strategy.name // "buildah"' "$build_file")
+                BUILDRUN_NAME="${BUILD_NAME}-run"
+                BUILDRUN_FILE="/tmp/custom-samples/buildruns/${BASE_NAME}-buildrun.yaml"
+                
+                cat > "$BUILDRUN_FILE" << EOFBUILDRUN
+              apiVersion: shipwright.io/v1beta1
+              kind: BuildRun
+              metadata:
+                name: ${BUILDRUN_NAME}
+                labels:
+                  build.shipwright.io/name: ${BUILD_NAME}
+                  build.shipwright.io/strategy: ${STRATEGY_NAME}
+                  e2e-test: "custom"
+                  generated-by: "rh-operator-pipeline"
+                  source: "rh-operator"
+              spec:
+                build:
+                  name: ${BUILD_NAME}
+                timeout: 15m
+                serviceAccount:
+                  name: pipeline
+              EOFBUILDRUN
+                echo "${BASE_NAME}:${BUILD_NAME}:${BUILDRUN_NAME}:${STRATEGY_NAME}" >> /tmp/build-mapping.txt
+              done
               
-              echo "Applying image URL format fixes for OpenShift registry"
-              find . -type f -name "*_test.go" -exec sed -i 's|fmt\.Sprintf("%s/%s:latest", testImageRepo, .*)|fmt.Sprintf("%s:%s", testImageRepo, name)|g' {} +
-              find . -type f -name "*_test.go" -exec sed -i 's|testImageRepo + "/" + .* + ":latest"|testImageRepo + ":" + name|g' {} +
-              find . -type f -name "*_test.go" -exec sed -i 's|%s/%s:latest|%s:%s|g' {} +
-              echo "Image URL fixes applied"
+              echo "Processed $BUILD_COUNT builds and generated corresponding BuildRuns"
               
-              # Fix hardcoded localhost replacement in test framework
-              find . -path "./test/utils/*/image.go" -exec sed -i 's|return strings\.Replace(image, "registry\.registry\.svc\.cluster\.local", "localhost", 1)|return image|g' {} \;
-              find . -path "./test/utils/*/image.go" -exec sed -i '/^[[:space:]]*"strings"$/d' {} \;
-                            
-              echo "Deploying test registry"
-              if [ -n "$(params.REGISTRY_YAML_URL)" ]; then
-                echo "Using external registry.yaml from: $(params.REGISTRY_YAML_URL)"
-                curl -sSL "$(params.REGISTRY_YAML_URL)" | oc apply -f - || echo "Failed to apply external registry.yaml, falling back to inline"
+              # Configuration
+              OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-builds-e2e-test}"
+              WORK_DIR="/tmp/e2e-test-override"
+              TEST_TIMEOUT="45m"
+              
+              # Detect registry (prefer test registry for e2e tests)
+              TEST_REGISTRY="registry.registry.svc.cluster.local:5000"
+              INTERNAL_REGISTRY="image-registry.openshift-image-registry.svc:5000"
+              
+              # Check if OpenShift image registry is accessible
+              if oc get route -n openshift-image-registry default-route >/dev/null 2>&1; then
+                EXTERNAL_REGISTRY=$(oc get route -n openshift-image-registry default-route -o jsonpath='{.spec.host}')
+                # Test if the route is actually accessible
+                if oc get service image-registry -n openshift-image-registry >/dev/null 2>&1; then
+                  OPENSHIFT_REGISTRY_ACCESSIBLE=true
+                  echo "Using OpenShift image registry: $EXTERNAL_REGISTRY"
+                fi
+              elif oc get service image-registry -n openshift-image-registry >/dev/null 2>&1; then
+                EXTERNAL_REGISTRY="$INTERNAL_REGISTRY"
+                OPENSHIFT_REGISTRY_ACCESSIBLE=true
+                echo "Using OpenShift internal registry: $EXTERNAL_REGISTRY"
               fi
               
-              # Check if registry deployment exists, deploy inline if not
-              if ! oc get deployment registry -n registry >/dev/null 2>&1; then
-                echo "Deploying inline registry..."
-                oc apply -f - <<EOF
+              # If OpenShift registry not accessible, check for existing test registry or plan to deploy
+              if [ "$OPENSHIFT_REGISTRY_ACCESSIBLE" = false ]; then
+                if oc get service registry -n registry >/dev/null 2>&1; then
+                  EXTERNAL_REGISTRY="$TEST_REGISTRY"
+                  echo "OpenShift registry not accessible, using existing test registry: $EXTERNAL_REGISTRY"
+                else
+                  echo "OpenShift registry not accessible, will deploy test registry"
+                  EXTERNAL_REGISTRY="$TEST_REGISTRY"
+                fi
+              fi
+              
+              DOWNSTREAM_OPERATOR_PACKAGE="openshift-builds-operator"
+              DOWNSTREAM_API_VERSION="shipwright.io/v1beta1"
+              DOWNSTREAM_SOURCE_REPO="https://github.com/anchi205/rh-operator.git"
+              DOWNSTREAM_BUILD_STRATEGIES=("buildah" "buildpacks" "buildpacks-extender" "source-to-image")
+              SKIP_TEST_LABELS=("PipelineRun" "BuildKit" "VulnerabilityScanning" "MultiArch" "Kaniko")
+              
+              # Setup test environment
+              export TEST_NAMESPACE="$OPERATOR_NAMESPACE"
+              export TEST_IMAGE_REPO="${EXTERNAL_REGISTRY}/${OPERATOR_NAMESPACE}"
+              export TEST_IMAGE_REPO_INSECURE="false"
+              export TEST_PRIVATE_REPO="false"
+              export TEST_E2E_VERIFY_TEKTONOBJECTS="true"
+              export TEST_E2E_SERVICEACCOUNT_NAME="pipeline"
+              export TEST_E2E_TIMEOUT_MULTIPLIER="3"
+              export DOWNSTREAM_OPERATOR_PACKAGE="$DOWNSTREAM_OPERATOR_PACKAGE"
+              export DOWNSTREAM_API_VERSION="$DOWNSTREAM_API_VERSION"
+              
+              # Set registry-specific configuration
+              if [ "$OPENSHIFT_REGISTRY_ACCESSIBLE" = false ]; then
+                export TEST_IMAGE_REPO_INSECURE="true"  # Test registry may not have TLS
+                echo "Using test registry with insecure connection: $EXTERNAL_REGISTRY"
+              fi
+              
+              # Pre-flight checks
+              if ! oc get namespace "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+                echo "ERROR: Namespace $OPERATOR_NAMESPACE does not exist!"
+                exit 1
+              fi
+              
+              # Wait for operator pods to be running first
+              echo "Waiting for operator pods to be running..."
+              TIMEOUT=180
+              ELAPSED=0
+              while [ $ELAPSED -lt $TIMEOUT ]; do
+                RUNNING_PODS=$(oc get pods -n "$OPERATOR_NAMESPACE" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+                if [ $RUNNING_PODS -gt 0 ]; then
+                  echo "Found $RUNNING_PODS running pod(s) in $OPERATOR_NAMESPACE"
+                  oc get pods -n "$OPERATOR_NAMESPACE"
+                  break
+                fi
+                if [ $ELAPSED -eq 0 ]; then
+                  echo "  No running pods yet, waiting..."
+                fi
+                sleep 5
+                ELAPSED=$((ELAPSED + 5))
+              done
+              
+              if [ $RUNNING_PODS -eq 0 ]; then
+                echo "ERROR: No operator pods running after ${TIMEOUT}s!"
+                echo "Pod status:"
+                oc get pods -n "$OPERATOR_NAMESPACE" -o wide
+                echo ""
+                echo "Recent events:"
+                oc get events -n "$OPERATOR_NAMESPACE" --sort-by='.lastTimestamp' | tail -20
+                exit 1
+              fi
+              
+              echo "Waiting for CRDs to be available..."
+              REQUIRED_CRDS=("builds.shipwright.io" "buildruns.shipwright.io" "buildstrategies.shipwright.io" "clusterbuildstrategies.shipwright.io")
+              
+              # Wait up to 2 minutes for CRDs to be created
+              for crd in "${REQUIRED_CRDS[@]}"; do
+                echo "Checking CRD: $crd"
+                TIMEOUT=120
+                ELAPSED=0
+                while [ $ELAPSED -lt $TIMEOUT ]; do
+                  if oc get crd "$crd" >/dev/null 2>&1; then
+                    echo "  CRD found: $crd"
+                    break
+                  fi
+                  if [ $ELAPSED -eq 0 ]; then
+                    echo "  Waiting for CRD to be created..."
+                  fi
+                  sleep 5
+                  ELAPSED=$((ELAPSED + 5))
+                done
+                
+                if ! oc get crd "$crd" >/dev/null 2>&1; then
+                  echo "ERROR: Required CRD not found after ${TIMEOUT}s: $crd"
+                  echo "Available CRDs:"
+                  oc get crd | grep -i shipwright || echo "  No Shipwright CRDs found"
+                  echo ""
+                  echo "Operator pods:"
+                  oc get pods -n $OPERATOR_NAMESPACE
+                  echo ""
+                  echo "Operator logs:"
+                  oc logs -n $OPERATOR_NAMESPACE deployment/openshift-builds-operator --tail=50 || echo "  Could not get logs"
+                  exit 1
+                fi
+              done
+              
+              echo "All required CRDs are available"
+              
+              if ! oc get sa "$TEST_E2E_SERVICEACCOUNT_NAME" -n "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+                oc create sa "$TEST_E2E_SERVICEACCOUNT_NAME" -n "$OPERATOR_NAMESPACE" 2>/dev/null || true
+              fi
+              
+              # Prepare test files
+              rm -rf "$WORK_DIR"
+              mkdir -p "$WORK_DIR"
+              cp -r /workspace/shipwright-build/test "$WORK_DIR/"
+              cp /workspace/shipwright-build/go.mod "$WORK_DIR/"
+              cp /workspace/shipwright-build/go.sum "$WORK_DIR/"
+              cp -r /workspace/shipwright-build/pkg "$WORK_DIR/"
+              
+              # Replace samples with custom builds
+              mkdir -p "$WORK_DIR/samples/v1beta1/build" "$WORK_DIR/samples/v1beta1/buildrun"
+              cp /tmp/custom-samples/builds/* "$WORK_DIR/samples/v1beta1/build/" 2>/dev/null || true
+              cp /tmp/custom-samples/buildruns/* "$WORK_DIR/samples/v1beta1/buildrun/" 2>/dev/null || true
+              
+              # Detect and validate build strategies (with retry)
+              echo "Waiting for ClusterBuildStrategies to be available..."
+              TIMEOUT=120
+              ELAPSED=0
+              AVAILABLE_STRATEGIES=""
+              
+              while [ $ELAPSED -lt $TIMEOUT ]; do
+                AVAILABLE_STRATEGIES=$(oc get clusterbuildstrategy -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+                if [ -n "$AVAILABLE_STRATEGIES" ]; then
+                  echo "Found ClusterBuildStrategies: $AVAILABLE_STRATEGIES"
+                  break
+                fi
+                if [ $ELAPSED -eq 0 ]; then
+                  echo "  No strategies found yet, waiting..."
+                fi
+                sleep 5
+                ELAPSED=$((ELAPSED + 5))
+              done
+              
+              FOUND_STRATEGIES=()
+              for strategy in "${DOWNSTREAM_BUILD_STRATEGIES[@]}"; do
+                if echo "$AVAILABLE_STRATEGIES" | grep -qw "$strategy"; then
+                  FOUND_STRATEGIES+=("$strategy")
+                  echo "  Found required strategy: $strategy"
+                fi
+              done
+              
+              if [ ${#FOUND_STRATEGIES[@]} -eq 0 ]; then
+                echo "ERROR: No downstream build strategies found in cluster after ${TIMEOUT}s!"
+                echo "Expected: ${DOWNSTREAM_BUILD_STRATEGIES[*]}"
+                echo "Available: $AVAILABLE_STRATEGIES"
+                echo ""
+                echo "Checking operator status..."
+                oc get pods -n $OPERATOR_NAMESPACE
+                oc logs -n $OPERATOR_NAMESPACE deployment/shipwright-build-controller --tail=100 2>/dev/null || echo "  Could not get controller logs"
+                exit 1
+              fi
+              
+              echo "All required build strategies are available: ${FOUND_STRATEGIES[*]}"
+              
+              # Deploy test registry only if OpenShift registry is not accessible
+              if [ "$OPENSHIFT_REGISTRY_ACCESSIBLE" = false ]; then
+                echo "Setting up test registry (OpenShift registry not accessible)..."
+                
+                # Deploy inline test registry if not already exists
+                if ! oc get deployment registry -n registry >/dev/null 2>&1; then
+                  echo "Deploying inline test registry..."
+                  oc apply -f - <<EOF
               ---
               apiVersion: v1
               kind: Namespace
               metadata:
                 name: registry
-              
               ---
               apiVersion: apps/v1
               kind: Deployment
@@ -459,7 +692,6 @@ spec:
                           limits:
                             cpu: 100m
                             memory: 128M
-               
               ---
               apiVersion: v1
               kind: Service
@@ -478,162 +710,88 @@ spec:
                   app: registry
                 type: ClusterIP
               EOF
+                
+                  # Wait for registry deployment to be ready
+                  echo "Waiting for test registry to be ready..."
+                  oc wait --for=condition=Available --timeout=300s deployment/registry -n registry
+                  echo "Test registry deployed and ready"
+                else
+                  echo "Test registry already exists and ready"
+                fi
               else
-                echo "Registry deployment already exists"
+                echo "OpenShift registry is accessible, skipping test registry deployment"
               fi
               
-              echo "Waiting for registry deployment to be ready..."
-              oc wait --for=condition=Available --timeout=300s deployment/registry -n registry
-              echo "Test registry deployed and ready"
-                            
-              echo "Installing Shipwright deployment (v0.17.0)"
-              oc apply --filename https://github.com/shipwright-io/build/releases/download/v0.17.0/release.yaml --server-side --force-conflicts
+              # Update registry references based on which registry we're using
+              if [ "$OPENSHIFT_REGISTRY_ACCESSIBLE" = true ]; then
+                find "$WORK_DIR/samples" -name "*.yaml" -type f -exec sed -i "s|image-registry.openshift-image-registry.svc:5000/namespace|${TEST_IMAGE_REPO}|g" {} \;
+                find "$WORK_DIR/samples" -name "*.yaml" -type f -exec sed -i "s|registry.registry.svc.cluster.local:5000/namespace|${TEST_IMAGE_REPO}|g" {} \;
+              else
+                find "$WORK_DIR/samples" -name "*.yaml" -type f -exec sed -i "s|image-registry.openshift-image-registry.svc:5000/namespace|${TEST_IMAGE_REPO}|g" {} \;
+                find "$WORK_DIR/samples" -name "*.yaml" -type f -exec sed -i "s|registry.registry.svc.cluster.local:5000/namespace|${TEST_IMAGE_REPO}|g" {} \;
+              fi
+              find "$WORK_DIR/samples" -name "*.yaml" -type f -exec sed -i "s|namespace/sample-go-app|${OPERATOR_NAMESPACE}/custom-app|g" {} \;
+              find "$WORK_DIR/test" -name "*.go" -type f -exec sed -i 's|EnvVarTimeoutMultiplier = "3\.0"|EnvVarTimeoutMultiplier = "3"|g' {} \;
+              find "$WORK_DIR/test" -name "*.go" -type f -exec sed -i 's|EnvVarTimeoutMultiplier="3\.0"|EnvVarTimeoutMultiplier="3"|g' {} \;
               
-              oc wait --for=create serviceaccount/shipwright-build-webhook -n shipwright-build --timeout=60s || true
-              oc wait --for=create serviceaccount/shipwright-build-controller -n shipwright-build --timeout=60s || true
+              # Apply image URL format fixes for OpenShift registry
+              cd "$WORK_DIR"
+              find . -type f -name "*_test.go" -exec sed -i 's|fmt\.Sprintf("%s/%s:latest", testImageRepo, .*)|fmt.Sprintf("%s:%s", testImageRepo, name)|g' {} +
+              find . -type f -name "*_test.go" -exec sed -i 's|testImageRepo + "/" + .* + ":latest"|testImageRepo + ":" + name|g' {} +
+              find . -type f -name "*_test.go" -exec sed -i 's|%s/%s:latest|%s:%s|g' {} +
               
-              echo "Configuring SCC permissions for Shipwright components"
-              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-webhook || true
-              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-controller || true
+              # Fix hardcoded localhost replacement in test framework
+              find . -path "./test/utils/*/image.go" -exec sed -i 's|return strings\.Replace(image, "registry\.registry\.svc\.cluster\.local", "localhost", 1)|return image|g' {} \;
+              find . -path "./test/utils/*/image.go" -exec sed -i '/^[[:space:]]*"strings"$/d' {} \;
               
-              # Give deployments time to start with proper SCCs before certificate setup
-              echo "Allowing deployments to stabilize..."
-              sleep 30
+              # Build test filters and run tests
+              cd "$WORK_DIR/test/e2e/v1beta1"
+              SKIP_FILTERS=""
               
-              echo "Setting up webhook certificates"
-              curl --silent --location https://raw.githubusercontent.com/shipwright-io/build/v0.17.0/hack/setup-webhook-cert.sh | bash || echo "Webhook setup completed with warnings"
-              
-              echo "Waiting for webhook deployment to be ready"
-              for i in {1..3}; do
-                echo "Attempt $i: Checking webhook deployment status"
-                if oc wait --for=condition=Available --timeout=300s deployment/shipwright-build-webhook -n shipwright-build; then
-                  echo "Webhook deployment is ready"
-                  break
-                elif [ $i -eq 3 ]; then
-                  echo "Webhook deployment taking longer than expected, but continuing"
-                  oc get deployment shipwright-build-webhook -n shipwright-build || true
-                  oc get pods -n shipwright-build -l name=shp-build-webhook || true
-                  oc describe deployment shipwright-build-webhook -n shipwright-build || true
+              # Add skip labels for unsupported features
+              for skip_label in "${SKIP_TEST_LABELS[@]}"; do
+                if [ -z "$SKIP_FILTERS" ]; then
+                  SKIP_FILTERS="!$skip_label"
                 else
-                  echo "Retrying webhook deployment check in 30 seconds"
-                  sleep 30
+                  SKIP_FILTERS="$SKIP_FILTERS && !$skip_label"
                 fi
               done
               
-              echo "Running storage version migration"
-              curl --silent --location https://raw.githubusercontent.com/shipwright-io/build/v0.17.0/hack/storage-version-migration.sh | bash
+              # Skip unavailable strategies
+              ALL_KNOWN_STRATEGIES=("buildah" "buildpacks" "buildpacks-extender" "source-to-image" "kaniko" "ko" "buildkit")
+              for strategy in "${ALL_KNOWN_STRATEGIES[@]}"; do
+                if ! printf '%s\n' "${DOWNSTREAM_BUILD_STRATEGIES[@]}" | grep -q "^$strategy$" || ! echo "$AVAILABLE_STRATEGIES" | grep -qw "$strategy"; then
+                  STRATEGY_LABEL=$(echo "$strategy" | sed 's/-/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2));}1' | sed 's/ //g')
+                  SKIP_FILTERS="$SKIP_FILTERS && !$STRATEGY_LABEL"
+                fi
+              done
               
-              echo "Installing Shipwright sample strategies"
-              oc apply --filename https://github.com/shipwright-io/build/releases/download/v0.17.0/sample-strategies.yaml --server-side --force-conflicts
+              # Run tests
+              echo "Running e2e tests: $BUILD_COUNT builds, ${#FOUND_STRATEGIES[@]} strategies"
               
-              echo "Waiting for Shipwright CRDs to be established"
-              oc wait --for condition=established --timeout=300s crd/clusterbuildstrategies.shipwright.io 2>/dev/null || echo "Continuing without CRD wait..."
+              set +e
+              ginkgo -v --timeout="$TEST_TIMEOUT" --label-filter="$SKIP_FILTERS" . 2>&1 | tee /tmp/test-output.log
+              TEST_EXIT_CODE=${PIPESTATUS[0]}
+              set -e
               
-              echo "Creating required test namespaces"
-              oc create namespace $(params.TEST_NAMESPACE) --dry-run=client -o yaml | oc apply -f -
-              echo "Test namespace created/ensured: $(params.TEST_NAMESPACE)"
-              
-              echo "Creating SCC for Shipwright builds"
-              oc apply -f - <<EOF
-              apiVersion: security.openshift.io/v1
-              kind: SecurityContextConstraints
-              metadata:
-                name: shipwright
-                annotations:
-                  kubernetes.io/description: "SCC for Shipwright Build - allows everything needed for container builds"
-              allowHostDirVolumePlugin: true
-              allowHostIPC: true
-              allowHostNetwork: true
-              allowHostPID: true
-              allowHostPorts: true
-              allowPrivilegeEscalation: true
-              allowPrivilegedContainer: true
-              allowedCapabilities:
-              - '*'
-              allowedUnsafeSysctls:
-              - '*'
-              defaultAddCapabilities: null
-              fsGroup:
-                type: RunAsAny
-              priority: 100
-              readOnlyRootFilesystem: false
-              requiredDropCapabilities: null
-              runAsUser:
-                type: RunAsAny
-              seLinuxContext:
-                type: RunAsAny
-              seccompProfiles:
-              - '*'
-              supplementalGroups:
-                type: RunAsAny
-              users:
-              - system:serviceaccount:$(params.TEST_NAMESPACE):default
-              - system:serviceaccount:$(params.TEST_NAMESPACE):pipeline
-              - system:serviceaccount:$(params.BUILDS_NAMESPACE):default
-              - system:serviceaccount:shp-e2e:default
-              - system:serviceaccount:shp-e2e:pipeline
-              groups:
-              - system:serviceaccounts:$(params.TEST_NAMESPACE)
-              - system:serviceaccounts:shp-e2e
-              - system:serviceaccounts:$(params.BUILDS_NAMESPACE)
-              volumes:
-              - '*'
-              EOF
-              
-              # Bind SCC to test service accounts
-              oc adm policy add-scc-to-group shipwright system:serviceaccounts:$(params.TEST_NAMESPACE) || true
-              oc adm policy add-scc-to-group shipwright system:serviceaccounts:shp-e2e || true
-              oc adm policy add-scc-to-group shipwright system:serviceaccounts:$(params.BUILDS_NAMESPACE) || true
-              oc adm policy add-scc-to-user shipwright system:serviceaccount:shipwright-build:shipwright-build-controller || true
-              oc adm policy add-scc-to-user shipwright system:serviceaccount:shipwright-build:shipwright-build-webhook || true
-              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-webhook || true
-              oc adm policy add-scc-to-user privileged system:serviceaccount:shipwright-build:shipwright-build-controller || true
-              echo "SCC permissions configured"
-              
-
-              cd /workspace
-              
-              # Create service accounts in TEST_NAMESPACE and grant them cluster-admin permissions
-              # Note: cluster-admin-rbac.yaml covers openshift-builds namespace, but E2E tests run in TEST_NAMESPACE
-              echo "Creating service accounts and RBAC in TEST_NAMESPACE..."
-              oc create serviceaccount pipeline -n $(params.TEST_NAMESPACE) --dry-run=client -o yaml | oc apply -f -
-              
-              # Grant cluster-admin to TEST_NAMESPACE service accounts  
-              oc adm policy add-cluster-role-to-user cluster-admin system:serviceaccount:$(params.TEST_NAMESPACE):default || true
-              oc adm policy add-cluster-role-to-user cluster-admin system:serviceaccount:$(params.TEST_NAMESPACE):pipeline || true
-              
-              echo "RBAC permissions configured successfully"
-                            
-              export TEST_NAMESPACE="$(params.TEST_NAMESPACE)"
-              export TEST_E2E_SERVICEACCOUNT_NAME="generated"
-              export TEST_E2E_VERIFY_TEKTONOBJECTS="false"
-              export TEST_E2E_TIMEOUT_MULTIPLIER="1"
-              export TEST_IMAGE_REPO="registry.registry.svc.cluster.local:5000/builds-e2e-test"
-              export TEST_IMAGE_REPO_PLAINHTTP="false"
-              export TEST_IMAGE_REPO_INSECURE="true"
-              
-              export REGISTRY_INSECURE="true"
-              export INSECURE_SKIP_TLS_VERIFY="true"
-              export TEST_PRIVATE_REPO="false"
-              export GOSUMDB="off"
-              export GOPROXY="direct"
-              export GODEBUG="x509ignoreCN=0,tls13=1"
-              export SKOPEO_INSECURE_POLICY="true"
-              export BUILDAH_ISOLATION="rootless"
-              export CNB_INSECURE_REGISTRIES="registry.registry.svc.cluster.local:5000"
-              export CNB_REGISTRY_AUTH_SKIP_TLS="true"
-              export CNB_SKIP_TLS_VERIFY="true"
-              
-              
-              echo "Running E2E Tests"
-              cd /workspace/shipwright-build/$(params.TEST_PATH)
-              echo "Namespace: $(params.TEST_NAMESPACE)"
-              echo "Test Path: $(params.TEST_PATH)"
-              ginkgo -v --timeout=90m --label-filter='!PipelineRun && !BuildKit' . || TEST_RESULT=$?
-
-              if [ "${TEST_RESULT:-0}" -eq 0 ]; then
-                echo "E2E tests completed successfully!"
+              if [ $TEST_EXIT_CODE -eq 0 ]; then
+                echo "SUCCESS: All $BUILD_COUNT builds tested with ${#FOUND_STRATEGIES[@]} strategies"
+                oc get builds,buildruns -n "$OPERATOR_NAMESPACE" 2>/dev/null || true
               else
-                echo "E2E tests failed with exit code: ${TEST_RESULT:-0}"
-                exit ${TEST_RESULT:-1}
+                echo "FAILED: Tests failed (exit code: $TEST_EXIT_CODE)"
+                grep -E "(FAIL|Failed|Error|Panic)" /tmp/test-output.log | tail -10 || true
+                oc get builds,buildruns -n "$OPERATOR_NAMESPACE" 2>/dev/null || true
+                
+                # Show failed BuildRun logs if any
+                FAILED_BUILDRUNS=$(oc get buildruns -n "$OPERATOR_NAMESPACE" -o json 2>/dev/null | jq -r '.items[] | select(.status.conditions[]? | select(.type=="Succeeded" and .status=="False")) | .metadata.name' 2>/dev/null || echo "")
+                if [ -n "$FAILED_BUILDRUNS" ]; then
+                  for br in $FAILED_BUILDRUNS; do
+                    echo "Failed BuildRun: $br"
+                    BR_POD=$(oc get pods -n "$OPERATOR_NAMESPACE" -l "buildrun.shipwright.io/name=$br" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                    if [ -n "$BR_POD" ]; then
+                      oc logs "$BR_POD" -n "$OPERATOR_NAMESPACE" --tail=50 2>/dev/null || true
+                    fi
+                  done
+                fi
+                exit $TEST_EXIT_CODE
               fi
