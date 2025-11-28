@@ -1,0 +1,21 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipeline
+  namespace: openshift-builds
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pipeline-cluster-admin
+  annotations:
+    description: "Grants cluster-admin permissions to the Tekton pipeline ServiceAccount for E2E tests"
+subjects:
+- kind: ServiceAccount
+  name: pipeline
+  namespace: openshift-builds
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
