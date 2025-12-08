@@ -1,0 +1,410 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: e2e-openshift-builds
+spec:
+  description: |
+    An integration test which provisions an ephemeral Hypershift cluster and deploys an Operator
+    bundle from a Konflux snapshot. Enhanced with custom rh-operator builds and auto-generated BuildRuns.
+  params:
+    - description: Snapshot of the application
+      name: SNAPSHOT
+      default: '{"components": [{"name":"test-app", "containerImage": "quay.io/example/repo:latest"}]}'
+      type: string
+    - description: Builds for OpenShift Version
+      name: VERSION
+      default: "-1-6"
+      type: string
+  tasks:
+    - name: provision-eaas-space
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/eaas-provision-space/0.1/eaas-provision-space.yaml
+      params:
+        - name: ownerName
+          value: $(context.pipelineRun.name)
+        - name: ownerUid
+          value: $(context.pipelineRun.uid)
+    - name: provision-cluster
+      runAfter:
+        - provision-eaas-space
+      taskSpec:
+        results:
+          - name: clusterName
+            value: "$(steps.create-cluster.results.clusterName)"
+        steps:
+          - name: get-supported-versions
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-supported-ephemeral-cluster-versions/0.1/eaas-get-supported-ephemeral-cluster-versions.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+          - name: pick-version
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-latest-openshift-version-by-prefix/0.1/eaas-get-latest-openshift-version-by-prefix.yaml
+            params:
+              - name: prefix
+                value: "$(steps.get-supported-versions.results.versions[0])."
+          - name: create-cluster
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-create-ephemeral-cluster-hypershift-aws/0.1/eaas-create-ephemeral-cluster-hypershift-aws.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: version
+                value: "$(steps.pick-version.results.version)"
+              - name: instanceType
+                value: m5.2xlarge
+              - name: fips
+                value: "true"
+              - name: imageContentSources
+                value: |
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-rhel9-operator
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-operator-bundle
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-bundle$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-controller-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-controller$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-image-processing-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-processing$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-image-bundler-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-bundler$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-git-cloner-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-git-cloner$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-waiters-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-waiter$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-webhook-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-webhook$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource$(params.VERSION)
+                    - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-webhook-rhel9
+                      mirrors:
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource-webhook$(params.VERSION)
+    - name: verify-fips-enabled-on-nodes
+      description: Verify that FIPS is enabled on cluster nodes
+      runAfter:
+        - provision-cluster
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: check-fips
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              echo "Verifying FIPS compliance on cluster nodes..."
+              
+              # Get all worker nodes
+              WORKER_NODES=$(oc get nodes -l node-role.kubernetes.io/worker -o jsonpath='{.items[*].metadata.name}')
+              
+              if [ -z "$WORKER_NODES" ]; then
+                  echo "No worker nodes found. Checking all nodes..."
+                  WORKER_NODES=$(oc get nodes -o jsonpath='{.items[*].metadata.name}')
+              fi
+              
+              echo "Found nodes: $WORKER_NODES"
+              
+              # Check FIPS on each node
+              for NODE in $WORKER_NODES; do
+                  echo "Checking FIPS status on node: $NODE"
+                  
+                  # Create a debug pod to check FIPS status
+                  FIPS_STATUS=$(oc debug node/$NODE --image=quay.io/openshift-pipeline/ci:latest -- chroot /host cat /proc/sys/crypto/fips_enabled 2>/dev/null || echo "Failed to check")
+                  
+                  echo "FIPS status on $NODE: $FIPS_STATUS"
+                  
+                  if [ "$FIPS_STATUS" = "1" ]; then
+                      echo "PASS: Node $NODE has FIPS enabled"
+                  elif [ "$FIPS_STATUS" = "0" ]; then
+                      echo "FAIL: Node $NODE has FIPS disabled"
+                      exit 1
+                  else
+                      echo "FAIL: Failed to check FIPS status on node $NODE: $FIPS_STATUS"
+                      exit 1
+                  fi
+              done
+              
+              echo "All nodes have FIPS enabled"
+    - name: install-openshift-pipelines
+      runAfter:
+        - verify-fips-enabled-on-nodes
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: install-pipelines
+            image: registry.redhat.io/openshift4/ose-cli:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              oc apply -f - <<EOF
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: Subscription
+              metadata:
+                name: openshift-pipelines-operator
+                namespace: openshift-operators
+              spec:
+                channel: latest
+                name: openshift-pipelines-operator-rh
+                source: redhat-operators
+                sourceNamespace: openshift-marketplace
+              EOF
+              
+              NAMESPACE="openshift-operators"
+              DEPLOYMENTS=(
+                  "openshift-pipelines-operator"
+                  "tekton-operator-webhook"
+              )
+              
+              echo "=== Waiting for OpenShift Pipelines installation ==="
+              sleep 60
+              
+              for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+                  echo "=== Waiting for deployment: $DEPLOYMENT ==="
+                  
+                  if ! oc get deployment "$DEPLOYMENT" --namespace="$NAMESPACE" >/dev/null 2>&1; then
+                      echo "ERROR: Deployment $DEPLOYMENT does not exist"
+                      oc get deployments -n $NAMESPACE
+                      exit 1
+                  fi
+                  
+                  if ! oc wait deployment "$DEPLOYMENT" --namespace="$NAMESPACE" --for="condition=available" --timeout="180s"; then
+                      echo "ERROR: Deployment $DEPLOYMENT failed to become available"
+                      oc get deployment "$DEPLOYMENT" --namespace="$NAMESPACE" -o yaml
+                      exit 1
+                  fi
+                  
+                  echo "Deployment $DEPLOYMENT is available"
+              done
+              
+              echo "OpenShift Pipelines installed successfully"
+    - name: deploy-operator
+      runAfter:
+        - install-openshift-pipelines
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: operator-bundle-install
+            image: registry.redhat.io/openshift4/ose-cli:latest
+            env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              echo "Install operator-sdk and dependencies"
+              dnf -y install jq
+              export OPERATOR_SDK_VERSION=1.36.1
+              export ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n $(uname -m) ;; esac)
+              export OPERATOR_SDK_DL_URL=https://github.com/operator-framework/operator-sdk/releases/download/v${OPERATOR_SDK_VERSION}
+              curl -Lo /usr/local/bin/operator-sdk ${OPERATOR_SDK_DL_URL}/operator-sdk_linux_${ARCH}
+              chmod +x /usr/local/bin/operator-sdk
+              operator-sdk version
+              
+              echo "Find bundle image in snapshot"
+              BUNDLE_IMAGE=$(jq -r '.components[] | select(.name | startswith("openshift-builds-operator-bundle")) | .containerImage' <<< "$SNAPSHOT" | head -1)
+              [ -z "$BUNDLE_IMAGE" ] && echo "ERROR: Bundle image not found" && exit 1
+              echo "Bundle: $BUNDLE_IMAGE"
+              
+              echo "Install operator"
+              oc create namespace shipwright-build --dry-run=client -o yaml | oc apply -f -
+              operator-sdk run bundle --timeout=5m --namespace shipwright-build "$BUNDLE_IMAGE"
+              
+              echo "Create CRs from operator's alm-examples"
+              CSV_NAME=$(oc get csv -n shipwright-build -o name | grep openshift-builds-operator | head -1)
+              oc get $CSV_NAME -n shipwright-build -o jsonpath='{.metadata.annotations.alm-examples}' | jq '.[0]' | oc apply -f -
+              oc get $CSV_NAME -n shipwright-build -o jsonpath='{.metadata.annotations.alm-examples}' | jq '.[1] | .spec.targetNamespace = "shipwright-build"' | oc apply -f -
+              
+              echo "Wait for deployments to be created"
+              for i in {1..60}; do
+                  if oc get deployment shipwright-build-controller -n shipwright-build &>/dev/null && \
+                     oc get deployment shipwright-build-webhook -n shipwright-build &>/dev/null; then
+                      echo "Deployments found"
+                      break
+                  fi
+                  echo "Waiting for operator to create deployments... ($i/60)"
+                  sleep 10
+              done
+              
+              echo "Add SCC permissions"
+              oc adm policy add-scc-to-user anyuid -z shipwright-build-controller -n shipwright-build
+              oc adm policy add-scc-to-user anyuid -z shipwright-build-webhook -n shipwright-build
+              
+              echo "Create pipeline service account"
+              oc create serviceaccount pipeline -n shipwright-build 2>/dev/null || true
+              oc adm policy add-scc-to-user privileged -z pipeline -n shipwright-build
+              oc adm policy add-role-to-user edit -z pipeline -n shipwright-build
+              
+              echo "Wait for rollout"
+              oc rollout status deployment/shipwright-build-controller -n shipwright-build --timeout=10m
+              oc rollout status deployment/shipwright-build-webhook -n shipwright-build --timeout=5m
+              
+              echo "Operator deployed successfully"
+    - name: run-e2e-tests
+      description: Clone Shipwright repo and run e2e tests against deployed operator
+      runAfter:
+        - deploy-operator
+      timeout: "3h"
+      taskSpec:
+        volumes:
+          - name: credentials
+            emptyDir: { }
+        steps:
+          - name: get-kubeconfig
+            ref:
+              resolver: git
+              params:
+                - name: url
+                  value: https://github.com/konflux-ci/build-definitions.git
+                - name: revision
+                  value: main
+                - name: pathInRepo
+                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+            params:
+              - name: eaasSpaceSecretRef
+                value: $(tasks.provision-eaas-space.results.secretRef)
+              - name: clusterName
+                value: "$(tasks.provision-cluster.results.clusterName)"
+              - name: credentials
+                value: credentials
+          - name: run-e2e-tests
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+              - name: TEST_NAMESPACE
+                value: "shipwright-build"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex
+              
+              dnf -y install git golang make
+              export PATH=$PATH:$(go env GOPATH)/bin
+              
+              git clone https://github.com/shipwright-io/build.git /workspace/shipwright-build
+              cd /workspace/shipwright-build
+              
+              export TEST_NAMESPACE="shipwright-build"
+              export TEST_CONTROLLER_NAMESPACE="shipwright-build"
+              export TEST_WATCH_NAMESPACE="shipwright-build"
+              export TEST_E2E_SERVICEACCOUNT_NAME="pipeline"
+              export TEST_IMAGE_REPO="ttl.sh/build-e2e"
+              export TEST_E2E_FLAGS="-r --randomize-all --timeout=1h --trace --vv"
+              
+              sed -i 's|test/e2e/|test/e2e/v1beta1|g' Makefile
+              make test-e2e
