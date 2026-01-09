@@ -357,6 +357,12 @@ spec:
               oc adm policy add-scc-to-group anyuid system:serviceaccounts:openshift-builds
               oc create rolebinding privileged-scc-binding -n openshift-builds --clusterrole=system:openshift:scc:privileged --group=system:serviceaccounts:openshift-builds 2>/dev/null || true
               
+              echo "Wait for rollout"
+              oc rollout status deployment/shipwright-build-controller -n openshift-builds --timeout=10m
+              oc rollout status deployment/shipwright-build-webhook -n openshift-builds --timeout=5m
+              oc rollout status deployment/shared-resource-csi-driver-webhook -n openshift-builds --timeout=15m
+              oc rollout status daemonset/shared-resource-csi-driver-node -n openshift-builds --timeout=15m
+              
               echo "Operator deployed successfully"
           - name: verify-operands
             image: quay.io/openshift-pipeline/ci:latest
@@ -567,7 +573,8 @@ spec:
                   exit 1
               fi
               
-              echo "All running operands verified against bundle and snapshot" 
+              echo "All running operands verified against bundle and snapshot"
+              
     - name: run-e2e-tests
       description: Clone Shipwright repo and run e2e tests against deployed operator
       runAfter:
