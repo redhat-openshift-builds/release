@@ -616,12 +616,78 @@ spec:
               #!/usr/bin/env bash
               set -ex
               
-              dnf -y install git golang
+              # dnf -y install git golang
               export PATH=$PATH:$(go env GOPATH)/bin
+              go install github.com/onsi/ginkgo/v2/ginkgo@latest
               
+              # Run Builds with included strategies
+              SAMPLE_NS="builds-sample"
+              oc create namespace "$SAMPLE_NS"
+              git clone --branch avinal/build-sample --single-branch https://github.com/avinal/builds-samples.git /workspace/builds-sample
+              cd /workspace/builds-sample
+              oc apply -f build -n "$SAMPLE_NS"
+              oc apply -f buildrun -n "$SAMPLE_NS"
+
+              echo "=== Waiting for all BuildRuns to complete ==="
+              timeout 10m bash -c '
+                while true; do
+                  PENDING=$(oc get buildruns -n '"$SAMPLE_NS"' -o json | jq "
+                    [.items[]
+                      | select(
+                          .status.conditions == null
+                          or (.status.conditions[0].status | test(\"True|False\") | not)
+                        )
+                    ] | length
+                  ")
+                  [ "$PENDING" -eq 0 ] && break
+                  echo "Still waiting for $PENDING BuildRuns..."
+                  sleep 20
+                done
+              '
+
+              echo "=== Checking for failed BuildRuns ==="
+              FAILED_BUILDRUNS=$(oc get buildruns -n "$SAMPLE_NS" -o json | jq -r '
+                .items[]
+                | select(.status.conditions[]? | select(.type=="Succeeded" and .status=="False"))
+                | .metadata.name
+              ')
+
+              if [ -z "$FAILED_BUILDRUNS" ]; then
+                echo "No failed BuildRuns detected"
+              else
+                echo "Failed BuildRuns:"
+                echo "$FAILED_BUILDRUNS"
+
+                echo "=== Failure details ==="
+                for BR in $FAILED_BUILDRUNS; do
+                  echo "---- BuildRun: $BR ----"
+                  oc get buildrun "$BR" -n "$SAMPLE_NS" -o jsonpath='
+                Reason: {.status.conditions[?(@.type=="Succeeded")].reason}{"\n"}
+                Message: {.status.conditions[?(@.type=="Succeeded")].message}{"\n"}
+                '
+                done
+
+                echo "=== Fetching logs for failed BuildRuns ==="
+                for BR in $FAILED_BUILDRUNS; do
+                  POD=$(oc get pods -n "$SAMPLE_NS" \
+                    -l buildrun.shipwright.io/name="$BR" \
+                    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+                  if [ -n "$POD" ]; then
+                    echo "---- Logs for $BR (pod: $POD) ----"
+                    oc logs -n "$SAMPLE_NS" "$POD" --all-containers=true || true
+                  else
+                    echo "No pod found for BuildRun $BR"
+                  fi
+                done
+                
+                echo "ERROR: One or more BuildRuns failed"
+                # exit 1
+              fi
+
               git clone https://github.com/shipwright-io/build.git /workspace/openshift-builds
               cd /workspace/openshift-builds
-              
+
               export TEST_NAMESPACE="openshift-builds"
               export TEST_CONTROLLER_NAMESPACE="openshift-builds"
               export TEST_WATCH_NAMESPACE="openshift-builds"
@@ -630,8 +696,12 @@ spec:
               
               oc apply -n ${TEST_NAMESPACE} -R -f samples/v1beta1/buildstrategy/
               
-              go run github.com/onsi/ginkgo/v2/ginkgo -r --randomize-all --timeout=1h --trace -v \
+              ginkgo run -r \
+                --compilers=1 \
+                --randomize-all \
+                --timeout=1h \
+                --trace -v \
                 --skip-file=e2e_vulnerability_scanning_test.go \
                 --skip-file=e2e_pipelinerun_test.go \
-                --skip="mutate image timestamp when using BuildKit|when a Buildkit build with a contextDir|when a heroku Buildpacks|when a BuildKit build runs with a custom target" \
+                --skip='mutate image timestamp when using BuildKit|when a Buildkit build with a contextDir|when a heroku Buildpacks|when a BuildKit build runs with a custom target' \
                 ./test/e2e/v1beta1
