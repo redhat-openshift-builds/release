@@ -265,7 +265,8 @@ spec:
               done
               
               echo "OpenShift Pipelines installed successfully"
-    - name: deploy-operator
+    - name: deploy-and-verify-operator
+      description: Deploy operator and verify operands, CR status, and images from PR
       runAfter:
         - install-openshift-pipelines
       taskSpec:
@@ -290,7 +291,7 @@ spec:
                 value: "$(tasks.provision-cluster.results.clusterName)"
               - name: credentials
                 value: credentials
-          - name: operator-bundle-install
+          - name: deploy-operator
             image: registry.redhat.io/openshift4/ose-cli:latest
             env:
               - name: SNAPSHOT
@@ -319,19 +320,21 @@ spec:
               echo "Bundle: $BUNDLE_IMAGE"
               
               echo "Install operator"
-              oc create namespace shipwright-build --dry-run=client -o yaml | oc apply -f -
-              operator-sdk run bundle --timeout=5m --namespace shipwright-build "$BUNDLE_IMAGE"
+              oc create namespace openshift-builds --dry-run=client -o yaml | oc apply -f -
+              operator-sdk run bundle --timeout=5m --namespace openshift-builds "$BUNDLE_IMAGE"
               
-              echo "Create CRs from operator's alm-examples"
-              CSV_NAME=$(oc get csv -n shipwright-build -o name | grep openshift-builds-operator | head -1)
-              oc get $CSV_NAME -n shipwright-build -o jsonpath='{.metadata.annotations.alm-examples}' | jq '.[0]' | oc apply -f -
-              oc get $CSV_NAME -n shipwright-build -o jsonpath='{.metadata.annotations.alm-examples}' | jq '.[1] | .spec.targetNamespace = "shipwright-build"' | oc apply -f -
+              echo "Create OpenShiftBuild CR from operator's alm-examples"
+              CSV_NAME=$(oc get csv -n openshift-builds -o name | grep openshift-builds-operator | head -1)
+              oc get $CSV_NAME -n openshift-builds -o jsonpath='{.metadata.annotations.alm-examples}' | jq '.[0]' | oc apply -f -
+              # Note: ShipwrightBuild CR is auto-created by the OpenShiftBuild operator
               
               echo "Wait for deployments to be created"
               for i in {1..60}; do
-                  if oc get deployment shipwright-build-controller -n shipwright-build &>/dev/null && \
-                     oc get deployment shipwright-build-webhook -n shipwright-build &>/dev/null; then
-                      echo "Deployments found"
+                  if oc get deployment shipwright-build-controller -n openshift-builds &>/dev/null && \
+                     oc get deployment shipwright-build-webhook -n openshift-builds &>/dev/null && \
+                     oc get deployment shared-resource-csi-driver-webhook -n openshift-builds &>/dev/null && \
+                     oc get daemonset shared-resource-csi-driver-node -n openshift-builds &>/dev/null; then
+                      echo "All deployments found"
                       break
                   fi
                   echo "Waiting for operator to create deployments... ($i/60)"
@@ -339,30 +342,236 @@ spec:
               done
               
               echo "Add SCC permissions"
-              oc adm policy add-scc-to-user anyuid -z shipwright-build-controller -n shipwright-build
-              oc adm policy add-scc-to-user anyuid -z shipwright-build-webhook -n shipwright-build
+              oc adm policy add-scc-to-user anyuid -z shipwright-build-controller -n openshift-builds
+              oc adm policy add-scc-to-user anyuid -z shipwright-build-webhook -n openshift-builds
               
               echo "Create pipeline service account"
-              oc create serviceaccount pipeline -n shipwright-build 2>/dev/null || true
-              oc adm policy add-scc-to-user privileged -z pipeline -n shipwright-build
-              oc adm policy add-role-to-user edit -z pipeline -n shipwright-build
+              oc create serviceaccount pipeline -n openshift-builds 2>/dev/null || true
+              oc adm policy add-scc-to-user privileged -z pipeline -n openshift-builds
+              oc adm policy add-role-to-user edit -z pipeline -n openshift-builds
               
               echo "Grant SCC for BuildKit tests"
-              oc adm policy add-scc-to-group privileged system:serviceaccounts:shipwright-build
-              oc adm policy add-scc-to-user privileged -z default -n shipwright-build
+              oc adm policy add-scc-to-group privileged system:serviceaccounts:openshift-builds
+              oc adm policy add-scc-to-user privileged -z default -n openshift-builds
               
-              oc adm policy add-scc-to-group anyuid system:serviceaccounts:shipwright-build
-              oc create rolebinding privileged-scc-binding -n shipwright-build --clusterrole=system:openshift:scc:privileged --group=system:serviceaccounts:shipwright-build 2>/dev/null || true
-              
-              echo "Wait for rollout"
-              oc rollout status deployment/shipwright-build-controller -n shipwright-build --timeout=10m
-              oc rollout status deployment/shipwright-build-webhook -n shipwright-build --timeout=5m
+              oc adm policy add-scc-to-group anyuid system:serviceaccounts:openshift-builds
+              oc create rolebinding privileged-scc-binding -n openshift-builds --clusterrole=system:openshift:scc:privileged --group=system:serviceaccounts:openshift-builds 2>/dev/null || true
               
               echo "Operator deployed successfully"
+          - name: verify-operands
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              OPERANDS=(
+                  "deployment/shipwright-build-controller"
+                  "deployment/shipwright-build-webhook"
+                  "deployment/shared-resource-csi-driver-webhook"
+                  "daemonset/shared-resource-csi-driver-node"
+              )
+              
+              for OPERAND in "${OPERANDS[@]}"; do
+                  if ! oc get "$OPERAND" -n openshift-builds &>/dev/null; then
+                      echo "ERROR: $OPERAND not found"
+                      exit 1
+                  fi
+                  
+                  if ! oc rollout status "$OPERAND" -n openshift-builds --timeout=5m; then
+                      echo "ERROR: $OPERAND failed to roll out"
+                      oc describe "$OPERAND" -n openshift-builds
+                      exit 1
+                  fi
+                  
+                  echo "$OPERAND is ready"
+              done
+              
+              echo "All operands deployed."
+          - name: verify-cr-status
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+
+              oc wait --for=condition=Ready openshiftbuild/cluster --timeout=5m
+              oc get openshiftbuild/cluster -o jsonpath='{range .status.conditions[*]}  {.type}: {.status} ({.reason}){"\n"}{end}'
+              
+              echo "Waiting for ShipwrightBuild CR to be created"
+              for i in {1..30}; do
+                  if oc get shipwrightbuild -o name | head -1 &>/dev/null; then
+                      break
+                  fi
+                  sleep 5
+              done
+              
+              SHIPWRIGHT_CR=$(oc get shipwrightbuild -o name | head -1)
+              oc wait --for=condition=Ready ${SHIPWRIGHT_CR} --timeout=5m
+              oc get ${SHIPWRIGHT_CR} -o jsonpath='{range .status.conditions[*]}  {.type}: {.status} ({.reason}){"\n"}{end}'
+              
+              echo "CR status verified."
+          - name: verify-images
+            image: quay.io/openshift-pipeline/ci:latest
+            env:
+              - name: KUBECONFIG
+                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+            volumeMounts:
+              - name: credentials
+                mountPath: /credentials
+            script: |
+              #!/usr/bin/env bash
+              set -ex -u -o pipefail
+              
+              dnf -y install jq skopeo
+
+              # Configure skopeo auth for quay.io. Extracting quay.io credentials from the cluster's pull-secret
+              oc get secret pull-secret -n openshift-config -o jsonpath='{.data.\.dockerconfigjson}' | \
+                base64 -d | jq '{auths: {"quay.io": .auths["quay.io"]}}' > /tmp/auth.json
+              chmod 600 /tmp/auth.json
+              export REGISTRY_AUTH_FILE=/tmp/auth.json
+              trap "rm -f /tmp/auth.json" EXIT
+              
+              #snapshot contents
+              echo "$SNAPSHOT" | jq -r '.components[] | "\(.name): \(.containerImage)"'
+
+              echo "1: Verifying snapshot images exist in registry"
+
+              PASSED=0
+              FAILED=0
+
+              for IMAGE in $(echo "$SNAPSHOT" | jq -r '.components[].containerImage'); do
+                  COMPONENT=$(echo "$SNAPSHOT" | jq -r --arg img "$IMAGE" '.components[] | select(.containerImage == $img) | .name')
+                  SNAPSHOT_DIGEST="${IMAGE##*@}"
+
+                  #   1. Check image exists in registry
+                  if skopeo inspect --no-tags "docker://${IMAGE}" &>/dev/null; then
+                      # Image exists -> verify the digest matches exactly
+                      REGISTRY_DIGEST=$(skopeo inspect --no-tags "docker://${IMAGE}" | jq -r '.Digest')
+                      if [ "$REGISTRY_DIGEST" == "$SNAPSHOT_DIGEST" ]; then
+                          echo "PASS"
+                          PASSED=$((PASSED + 1))
+                      else
+                          echo "FAIL - Digest mismatch - expected $SNAPSHOT_DIGEST, got $REGISTRY_DIGEST"
+                          FAILED=$((FAILED + 1))
+                      fi
+                  else
+                      echo "FAIL: Image not found in registry"
+                      FAILED=$((FAILED + 1))
+                  fi
+              done
+              
+              if [ "$FAILED" -gt 0 ]; then
+                  echo "Snapshot contains invalid/missing images."
+                  exit 1
+              fi
+              
+              echo "All snapshot images verified in registry"
+              
+              echo "2: Verifying snapshot components are referenced in bundle relatedImages to confirm the bundle was built correctly with latest commit"              
+              CSV_NAME=$(oc get csv -n openshift-builds -o name | grep openshift-builds-operator | head -1)
+              echo "Found CSV: ${CSV_NAME}"
+
+              BUNDLE_RELATED_IMAGES=$(oc get "${CSV_NAME}" -n openshift-builds -o json | jq -r '.spec.relatedImages[]? | .image' 2>/dev/null || echo "")
+
+              if [ -z "$BUNDLE_RELATED_IMAGES" ]; then
+                  echo "No relatedImages found in CSV. Skipping bundle verification."
+              else
+                  BUNDLE_PASSED=0
+                  BUNDLE_FAILED=0
+
+                  # Verify each snapshot component (except bundle/fbc) is in bundle's relatedImages
+                  for COMPONENT in $(echo "$SNAPSHOT" | jq -r '.components[] | select(.name | test("bundle|fbc") | not) | .name'); do
+                      SNAPSHOT_DIGEST=$(echo "$SNAPSHOT" | jq -r --arg name "$COMPONENT" '.components[] | select(.name == $name) | .containerImage' | sed 's/.*@//')
+                      
+                      echo "Checking snapshot component: ${COMPONENT}"
+                      if echo "$BUNDLE_RELATED_IMAGES" | grep -q "$SNAPSHOT_DIGEST"; then
+                          echo "PASS: ${COMPONENT} -> found in bundle relatedImages"
+                          BUNDLE_PASSED=$((BUNDLE_PASSED + 1))
+                      else
+                          echo "FAIL: ${COMPONENT} - Digest not found in bundle relatedImages"
+                          BUNDLE_FAILED=$((BUNDLE_FAILED + 1))
+                      fi
+                  done
+                  
+                  echo "Snapshot components in bundle: ${BUNDLE_PASSED} passed, ${BUNDLE_FAILED} failed"
+                  
+                  if [ "$BUNDLE_FAILED" -gt 0 ]; then
+                      echo "Bundle is missing snapshot component refs. Bundle was not built correctly."
+                      exit 1
+                  fi
+              fi
+              echo "All snapshot components verified in bundle relatedImages."
+              
+              echo "3: Verifying running operands match bundle and snapshot"
+              # Note: daemonset/shared-resource-csi-driver-node containers[0] is external sidecar, skip it
+              OPERANDS=(
+                  "deployment/shipwright-build-controller"
+                  "deployment/shipwright-build-webhook"
+                  "deployment/shared-resource-csi-driver-webhook"
+              )
+
+              OPERAND_PASSED=0
+              OPERAND_FAILED=0
+
+              for OPERAND in "${OPERANDS[@]}"; do
+                  OPERAND_IMAGE=$(oc get "$OPERAND" -n openshift-builds -o jsonpath='{.spec.template.spec.containers[0].image}')
+                  
+                  # for example: quay.io/org/image:tag@sha256:abc123
+                  REPO_TAG="${OPERAND_IMAGE%@*}"        # quay.io/org/image:tag
+                  REPO="${REPO_TAG%:*}"                 # quay.io/org/image
+                  RUNNING_DIGEST="${OPERAND_IMAGE##*@}" # sha256:abc123
+
+                  echo "Checking ${OPERAND}..."
+                  echo "Image: ${REPO_TAG}"
+                  echo "Running digest: ${RUNNING_DIGEST}"
+                  
+                  # Verify running digest exists in bundle's relatedImages (bundle deployed correctly)
+                  if [ -n "$BUNDLE_RELATED_IMAGES" ]; then
+                      if echo "$BUNDLE_RELATED_IMAGES" | grep -q "$RUNNING_DIGEST"; then
+                          echo "PASS: Digest found in bundle relatedImages"
+                      else
+                          echo "FAIL: Running digest not found in bundle relatedImages"
+                          OPERAND_FAILED=$((OPERAND_FAILED + 1))
+                          continue
+                      fi
+                  fi
+                  
+                  # Verify running digest exists in snapshot (testing PR code)
+                  if echo "$SNAPSHOT" | jq -e --arg digest "$RUNNING_DIGEST" '.components[] | select(.containerImage | contains($digest))' > /dev/null 2>&1; then
+                      MATCHED_COMPONENT=$(echo "$SNAPSHOT" | jq -r --arg digest "$RUNNING_DIGEST" '.components[] | select(.containerImage | contains($digest)) | .name')
+                      echo "PASS: Matches SNAPSHOT component '$MATCHED_COMPONENT'"
+                      OPERAND_PASSED=$((OPERAND_PASSED + 1))
+                  else
+                      echo "FAIL: Running digest not found in SNAPSHOT. Not testing the PR/latest code."
+                      OPERAND_FAILED=$((OPERAND_FAILED + 1))
+                  fi
+              done
+              
+              echo "${OPERAND_PASSED} passed, ${OPERAND_FAILED} failed"
+              
+              if [ "$OPERAND_FAILED" -gt 0 ]; then
+                  echo "ERROR: ${OPERAND_FAILED} operand(s) failed verification"
+                  exit 1
+              fi
+              
+              echo "All running operands verified against bundle and snapshot" 
     - name: run-e2e-tests
       description: Clone Shipwright repo and run e2e tests against deployed operator
       runAfter:
-        - deploy-operator
+        - deploy-and-verify-operator
       timeout: "3h"
       taskSpec:
         volumes:
@@ -392,7 +601,7 @@ spec:
               - name: KUBECONFIG
                 value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
               - name: TEST_NAMESPACE
-                value: "shipwright-build"
+                value: "openshift-builds"
             volumeMounts:
               - name: credentials
                 mountPath: /credentials
@@ -403,12 +612,12 @@ spec:
               dnf -y install git golang
               export PATH=$PATH:$(go env GOPATH)/bin
               
-              git clone https://github.com/shipwright-io/build.git /workspace/shipwright-build
-              cd /workspace/shipwright-build
+              git clone https://github.com/shipwright-io/build.git /workspace/openshift-builds
+              cd /workspace/openshift-builds
               
-              export TEST_NAMESPACE="shipwright-build"
-              export TEST_CONTROLLER_NAMESPACE="shipwright-build"
-              export TEST_WATCH_NAMESPACE="shipwright-build"
+              export TEST_NAMESPACE="openshift-builds"
+              export TEST_CONTROLLER_NAMESPACE="openshift-builds"
+              export TEST_WATCH_NAMESPACE="openshift-builds"
               export TEST_E2E_SERVICEACCOUNT_NAME="pipeline"
               export TEST_IMAGE_REPO="ttl.sh/build-e2e"
               
