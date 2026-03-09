@@ -37,10 +37,6 @@ spec:
     name: dockerfile
     type: string
   - default: "false"
-    description: Force rebuild image
-    name: rebuild
-    type: string
-  - default: "false"
     description: Skip checks against built image
     name: skip-checks
     type: string
@@ -90,13 +86,6 @@ spec:
     value: $(tasks.clone-repository.results.commit)
   tasks:
   - name: init
-    params:
-    - name: image-url
-      value: $(params.output-image)
-    - name: rebuild
-      value: $(params.rebuild)
-    - name: skip-checks
-      value: $(params.skip-checks)
     taskRef:
       params:
       - name: name
@@ -127,11 +116,6 @@ spec:
       - name: kind
         value: task
       resolver: bundles
-    when:
-    - input: $(tasks.init.results.build)
-      operator: in
-      values:
-      - "true"
     workspaces:
     - name: basic-auth
       workspace: git-auth
@@ -222,11 +206,6 @@ spec:
       - name: kind
         value: task
       resolver: bundles
-    when:
-    - input: $(tasks.init.results.build)
-      operator: in
-      values:
-      - "true"
   - name: build-image-index
     params:
     - name: IMAGE
@@ -253,11 +232,6 @@ spec:
       - name: kind
         value: task
       resolver: bundles
-    when:
-    - input: $(tasks.init.results.build)
-      operator: in
-      values:
-      - "true"
   - name: build-source-image
     params:
     - name: BINARY_IMAGE
@@ -280,10 +254,6 @@ spec:
         value: task
       resolver: bundles
     when:
-    - input: $(tasks.init.results.build)
-      operator: in
-      values:
-      - "true"
     - input: $(params.build-source-image)
       operator: in
       values:
@@ -503,7 +473,7 @@ spec:
       - name: name
         value: rpms-signature-scan
       - name: bundle
-        value: quay.io/konflux-ci/tekton-catalog/task-rpms-signature-scan:0.2@sha256:e920854293f9917e628d8c68a0ee3b003dabe0a67a5a2fc865a354030d4f93e2
+        value: quay.io/konflux-ci/tekton-catalog/task-rpms-signature-scan:0.2@sha256:0dbb461d9d959f7c413217cea76939cd5d4a58d69ed4658c1302403265d01634
       - name: kind
         value: task
       resolver: bundles
