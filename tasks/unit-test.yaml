@@ -19,7 +19,7 @@ spec:
     - description: The Go base image used to run the unit tests
       name: BASE_IMAGE
       type: string
-      default: registry.redhat.io/ubi9/go-toolset:1.24
+      default: registry.redhat.io/ubi9/go-toolset@sha256:6da1160c0e8da15b585560ac6ef7b0179f17686aeaaa477ead6427daf8948fea
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir
@@ -33,7 +33,7 @@ spec:
       # This is needed because the different steps in this Task run with different user IDs.
       runAsUser: 0
   steps:
-    - image: quay.io/redhat-appstudio/build-trusted-artifacts:latest@sha256:9b180776a41d9a22a1c51539f1647c60defbbd55b44bbebdd4130e33512d8b0d
+    - image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:7c44144ab0a9644c5da8ceea2b9f8df0e2e684aa5c1608688d7df9b8cc2836ac
       name: use-trusted-artifact
       args:
         - use
@@ -44,10 +44,10 @@ spec:
       workingDir: /var/workdir/source
       resources:
         requests:
-          memory: 1Gi
+          memory: 2Gi
           cpu: 1000m
         limits:
-          memory: 2Gi
+          memory: 4Gi
           cpu: 2000m
       script: |
         #!/usr/bin/env sh
