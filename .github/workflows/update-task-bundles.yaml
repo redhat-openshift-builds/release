@@ -1,0 +1,64 @@
+name: Update Task Bundles
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-task-bundles:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # Install yq
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+          # Install skopeo
+          sudo apt-get update -q
+          sudo apt-get install -y -q skopeo
+
+      - name: Update task bundles
+        run: make update-pipelines
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes detected, skipping PR creation."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changes detected."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create pull request
+        if: steps.changes.outputs.changed == 'true'
+        id: create-pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: Update Tekton Task bundle references"
+          title: "Chore:Update Tekton Task bundle references"
+          body: |
+            Automated update of Tekton Task bundle references to the latest versions.
+
+            This PR was created by the **Update Task Bundles** workflow.
+          branch: automated/update-task-bundles
+          delete-branch: true
+
+      - name: Enable auto-merge
+        if: steps.changes.outputs.changed == 'true' && (steps.create-pr.outputs.pull-request-operation == 'created' || steps.create-pr.outputs.pull-request-operation == 'updated')
+        run: |
+          gh pr merge --auto --squash "${{ steps.create-pr.outputs.pull-request-number }}" || \
+            echo "::warning::Auto-merge could not be enabled. Ensure auto-merge is allowed in the repository settings."
+        env:
+          GH_TOKEN: ${{ github.token }}
