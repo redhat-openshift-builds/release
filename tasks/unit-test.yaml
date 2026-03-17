@@ -19,7 +19,7 @@ spec:
     - description: The Go base image used to run the unit tests
       name: BASE_IMAGE
       type: string
-      default: registry.redhat.io/ubi9/go-toolset@sha256:6da1160c0e8da15b585560ac6ef7b0179f17686aeaaa477ead6427daf8948fea
+      default: registry.redhat.io/ubi10/go-toolset@sha256:b7f71131f21be923baaaf952309b7940ae7c6a55ca44a7a91460adc6c8afd4de
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir
@@ -33,12 +33,12 @@ spec:
       # This is needed because the different steps in this Task run with different user IDs.
       runAsUser: 0
   steps:
-    - image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:0aecefdc3714304547e5f4eb90320b32595832e644ca61f605b73b594e021f4b
+    - image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:27ddb820f0d30609dcb8de88219309edbced429896324e474f494470c2f003fb
       name: use-trusted-artifact
       args:
         - use
         - $(params.SOURCE_ARTIFACT)=/var/workdir/source
-#        - $(params.CACHI2_ARTIFACT)=/cachi2
+        - $(params.CACHI2_ARTIFACT)=/cachi2
     - name: run-tests
       image:  $(params.BASE_IMAGE)
       workingDir: /var/workdir/source
