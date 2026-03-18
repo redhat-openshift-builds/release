@@ -112,7 +112,7 @@ spec:
       description: Unit test git URL
       name: unit-test-url
       type: string
-    - default: "5baf6ff715997cc03dd95b59470708bf57de003e"
+    - default: "main"
       description: Unit test git revision
       name: unit-test-revision
       type: string
