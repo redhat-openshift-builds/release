@@ -13,7 +13,7 @@ spec:
       type: string
     - description: Builds for OpenShift Version
       name: VERSION
-      default: "-1-6"
+      default: ""
       type: string
   tasks:
     - name: provision-eaas-space
@@ -39,6 +39,33 @@ spec:
           - name: clusterName
             value: "$(steps.create-cluster.results.clusterName)"
         steps:
+          - name: detect-version
+            image: quay.io/openshift-pipeline/ci:latest
+            results:
+              - name: version
+            env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+              - name: VERSION_OVERRIDE
+                value: $(params.VERSION)
+            script: |
+              #!/usr/bin/env bash
+              set -eu -o pipefail
+              if [ -n "$VERSION_OVERRIDE" ]; then
+                  printf '%s' "$VERSION_OVERRIDE" > "$(step.results.version.path)"
+                  exit 0
+              fi
+              BUNDLE_NAME=$(echo "$SNAPSHOT" | grep -o '"openshift-builds-operator-bundle[^"]*' | head -1 | tr -d '"')
+              if [ -z "$BUNDLE_NAME" ]; then
+                  echo "ERROR: no bundle component found in snapshot"
+                  exit 1
+              fi
+              VERSION="${BUNDLE_NAME#openshift-builds-operator-bundle}"
+              if [ -z "$VERSION" ]; then
+                  echo "ERROR: could not extract version suffix from $BUNDLE_NAME"
+                  exit 1
+              fi
+              printf '%s' "$VERSION" > "$(step.results.version.path)"
           - name: get-supported-versions
             ref:
               resolver: git
@@ -88,34 +115,34 @@ spec:
                 value: |
                     - source: registry.redhat.io/openshift-builds/openshift-builds-rhel9-operator
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-operator-bundle
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-bundle$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-bundle$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-controller-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-controller$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-controller$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-image-processing-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-processing$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-processing$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-image-bundler-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-bundler$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-image-bundler$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-git-cloner-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-git-cloner$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-git-cloner$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-waiters-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-waiter$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-waiter$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-webhook-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-webhook$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-webhook$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource$(steps.detect-version.results.version)
                     - source: registry.redhat.io/openshift-builds/openshift-builds-shared-resource-webhook-rhel9
                       mirrors:
-                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource-webhook$(params.VERSION)
+                        - quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-shared-resource-webhook$(steps.detect-version.results.version)
     - name: verify-fips-enabled-on-nodes
       description: Verify that FIPS is enabled on cluster nodes
       runAfter:
