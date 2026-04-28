@@ -49,12 +49,14 @@ spec:
       name: output-image
       type: string
     - default: .
-      description: Path to the source code of an application's component from where
+      description:
+        Path to the source code of an application's component from where
         to build image.
       name: path-context
       type: string
     - default: Dockerfile
-      description: Path to the Dockerfile inside the context specified by parameter
+      description:
+        Path to the Dockerfile inside the context specified by parameter
         path-context
       name: dockerfile
       type: string
@@ -75,7 +77,8 @@ spec:
       name: prefetch-dev-package-managers
       type: string
     - default: ""
-      description: Image tag expiration time, time values could be something like
+      description:
+        Image tag expiration time, time values could be something like
         1h, 2d, 3w for hours, days, and weeks, respectively.
       name: image-expires-after
     - default: "false"
@@ -96,7 +99,8 @@ spec:
       type: string
     - default:
         - linux/x86_64
-      description: List of platforms to build the container images on. The available
+      description:
+        List of platforms to build the container images on. The available
         set of values is determined by the configuration of the multi-platform-controller.
       name: build-platforms
       type: array
@@ -124,16 +128,12 @@ spec:
       name: unit-test-base-image
       type: string
       default: registry.redhat.io/ubi9/go-toolset@sha256:59ec4752cf86f0d0dd240b9e29c64d6ee560c28fc986171e126db1db216a246a
-    - default: "false"
-      description: Set 'true' to enable sealights
-      name: enable-sealights
-      type: string
     - default: docker
       description: The format for the resulting image's mediaType. Valid values are oci (default) or docker.
       name: buildah-format
       type: string
     - name: enable-package-registry-proxy
-      default: 'true'
+      default: "true"
       description: Use the package registry proxy when prefetching dependencies
       type: string
     - name: sast-target-dirs
@@ -218,50 +218,9 @@ spec:
           workspace: git-auth
         - name: netrc
           workspace: netrc
-    - name: sealights-instrumentation
-      runAfter:
-        - prefetch-dependencies
-      taskRef:
-        params:
-        - name: name
-          value: sealights-go-oci-ta
-        - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-sealights-go-oci-ta:0.1@sha256:ac8f8e0018df19ba5550755eaa37c6eee3aa1a354926052c38e9d39ef5e58dae
-        - name: kind
-          value: task
-        resolver: bundles
-      params:
-        - name: SOURCE_ARTIFACT
-          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
-        - name: component
-          value: "openshift-builds-operator"
-        - name: branch
-          value: $(params.branch)
-        - name: revision
-          value: $(params.revision)
-        - name: repository-url
-          value: $(params.repository-url)
-        - name: test-event
-          value: $(params.test-event)
-        - name: pull-request-number
-          value: $(params.pull-request-number)
-        - name: target-branch
-          value: $(params.branch)
-        - name: oci-storage
-          value: $(params.output-image).sealights.git
-      when:
-        - input: $(params.run-unit-test)
-          operator: in
-          values:
-            - "true"
-        - input: $(params.enable-sealights)
-          operator: in
-          values:
-            - "true"
     - name: unit-test
       runAfter:
         - prefetch-dependencies
-        # - sealights-instrumentation
       taskRef:
         resolver: git
         params:
@@ -270,10 +229,10 @@ spec:
           - name: revision
             value: $(params.unit-test-revision)
           - name: pathInRepo
-            value: 'tasks/unit-test.yaml'
+            value: "tasks/unit-test.yaml"
       params:
         - name: SOURCE_ARTIFACT
-          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+          value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
         - name: CACHI2_ARTIFACT
           value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
         - name: TEST_COMMAND
