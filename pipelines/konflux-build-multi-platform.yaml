@@ -124,10 +124,6 @@ spec:
       name: unit-test-base-image
       type: string
       default: registry.redhat.io/ubi9/go-toolset@sha256:71f121a44270e46a17a548d6b92096a1a0fb56db44927ad318d095177d6dce4b
-    - default: "false"
-      description: Set 'true' to enable sealights
-      name: enable-sealights
-      type: string
     - default: docker
       description: The format for the resulting image's mediaType. Valid values are oci (default) or docker.
       name: buildah-format
@@ -214,50 +210,9 @@ spec:
           workspace: git-auth
         - name: netrc
           workspace: netrc
-    - name: sealights-instrumentation
-      runAfter:
-        - prefetch-dependencies
-      taskRef:
-        params:
-        - name: name
-          value: sealights-go-oci-ta
-        - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-sealights-go-oci-ta:0.1@sha256:ac8f8e0018df19ba5550755eaa37c6eee3aa1a354926052c38e9d39ef5e58dae
-        - name: kind
-          value: task
-        resolver: bundles
-      params:
-        - name: SOURCE_ARTIFACT
-          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
-        - name: component
-          value: "openshift-builds-operator"
-        - name: branch
-          value: $(params.branch)
-        - name: revision
-          value: $(params.revision)
-        - name: repository-url
-          value: $(params.repository-url)
-        - name: test-event
-          value: $(params.test-event)
-        - name: pull-request-number
-          value: $(params.pull-request-number)
-        - name: target-branch
-          value: $(params.branch)
-        - name: oci-storage
-          value: $(params.output-image).sealights.git
-      when:
-        - input: $(params.run-unit-test)
-          operator: in
-          values:
-            - "true"
-        - input: $(params.enable-sealights)
-          operator: in
-          values:
-            - "true"
     - name: unit-test
       runAfter:
         - prefetch-dependencies
-        # - sealights-instrumentation
       taskRef:
         resolver: git
         params:
@@ -269,7 +224,7 @@ spec:
             value: 'tasks/unit-test.yaml'
       params:
         - name: SOURCE_ARTIFACT
-          value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+          value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
         - name: CACHI2_ARTIFACT
           value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
         - name: TEST_COMMAND
