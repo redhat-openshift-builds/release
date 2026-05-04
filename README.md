@@ -67,4 +67,3 @@ quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-fbc-4-
   value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-1-1:on-pr-{{revision}}
 ```
 
-
