@@ -1,0 +1,81 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: e2e-verify-fips
+  annotations:
+    tekton.dev/title: "Verify FIPS Enabled on Cluster Nodes"
+spec:
+  params:
+    - name: eaasSpaceSecretRef
+      type: string
+      description: EaaS space secret reference
+    - name: clusterName
+      type: string
+      description: Name of the provisioned cluster
+  volumes:
+    - name: credentials
+      emptyDir: {}
+  steps:
+    - name: get-kubeconfig
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+      params:
+        - name: eaasSpaceSecretRef
+          value: $(params.eaasSpaceSecretRef)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: credentials
+          value: credentials
+    - name: check-fips
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        echo "Verifying FIPS compliance on cluster nodes..."
+
+        WORKER_NODES=$(oc get nodes -l node-role.kubernetes.io/worker -o jsonpath='{.items[*].metadata.name}')
+
+        if [ -z "$WORKER_NODES" ]; then
+            echo "No worker nodes found. Checking all nodes..."
+            WORKER_NODES=$(oc get nodes -o jsonpath='{.items[*].metadata.name}')
+        fi
+
+        echo "Found nodes: $WORKER_NODES"
+
+        for NODE in $WORKER_NODES; do
+            echo "Checking FIPS status on node: $NODE"
+
+            FIPS_RAW=$(oc debug "node/$NODE" -- chroot /host cat /proc/sys/crypto/fips_enabled 2>/dev/null || echo "")
+            FIPS_STATUS=$(echo "$FIPS_RAW" | grep -xE '[01]' | tail -1)
+
+            if [ -z "$FIPS_STATUS" ]; then
+                echo "FAIL: Could not determine FIPS status on node $NODE"
+                echo "Raw output: $FIPS_RAW"
+                exit 1
+            fi
+
+            echo "FIPS status on $NODE: $FIPS_STATUS"
+
+            if [ "$FIPS_STATUS" = "1" ]; then
+                echo "PASS: Node $NODE has FIPS enabled"
+            else
+                echo "FAIL: Node $NODE has FIPS disabled"
+                exit 1
+            fi
+        done
+
+        echo "All nodes have FIPS enabled"

@@ -1,0 +1,131 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: e2e-validate-snapshot
+  annotations:
+    tekton.dev/title: "Validate Snapshot Images and Bundle"
+spec:
+  description: |
+    Pre-cluster validation: verifies snapshot images exist in the registry and
+    that the bundle's relatedImages reference every snapshot component digest.
+    Fails fast before cluster provisioning if the bundle was built with stale images.
+  params:
+    - name: SNAPSHOT
+      type: string
+      description: Konflux snapshot JSON
+  steps:
+    - name: validate-snapshot
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        echo "=== Snapshot contents ==="
+        echo "$SNAPSHOT" | jq -r '.components[] | "\(.name): \(.containerImage)"'
+
+        COMPONENT_COUNT=$(echo "$SNAPSHOT" | jq '.components | length')
+        if [ "$COMPONENT_COUNT" -eq 0 ]; then
+            echo "ERROR: Snapshot contains no components"
+            exit 1
+        fi
+        echo "Snapshot contains $COMPONENT_COUNT component(s)"
+
+        echo ""
+        echo "=== 1: Verifying snapshot images exist in registry ==="
+
+        PASSED=0
+        FAILED=0
+
+        for IMAGE in $(echo "$SNAPSHOT" | jq -r '.components[].containerImage'); do
+            COMPONENT=$(echo "$SNAPSHOT" | jq -r --arg img "$IMAGE" '.components[] | select(.containerImage == $img) | .name')
+            SNAPSHOT_DIGEST="${IMAGE##*@}"
+
+            if skopeo inspect --no-tags "docker://${IMAGE}" &>/dev/null; then
+                REGISTRY_DIGEST=$(skopeo inspect --no-tags "docker://${IMAGE}" | jq -r '.Digest')
+                if [ "$REGISTRY_DIGEST" == "$SNAPSHOT_DIGEST" ]; then
+                    echo "PASS: ${COMPONENT}"
+                    PASSED=$((PASSED + 1))
+                else
+                    echo "FAIL: ${COMPONENT} - Digest mismatch - expected $SNAPSHOT_DIGEST, got $REGISTRY_DIGEST"
+                    FAILED=$((FAILED + 1))
+                fi
+            else
+                echo "FAIL: ${COMPONENT} - Image not found in registry"
+                FAILED=$((FAILED + 1))
+            fi
+        done
+
+        if [ "$FAILED" -gt 0 ]; then
+            echo "ERROR: Snapshot contains $FAILED invalid/missing image(s)"
+            exit 1
+        fi
+        echo "All $PASSED snapshot images verified in registry"
+
+        echo ""
+        echo "=== 2: Extracting bundle relatedImages and comparing with snapshot ==="
+
+        BUNDLE_IMAGE=$(echo "$SNAPSHOT" | jq -r '.components[] | select(.name | startswith("openshift-builds-operator-bundle")) | .containerImage' | head -1)
+        if [ -z "$BUNDLE_IMAGE" ]; then
+            echo "ERROR: No bundle image found in snapshot"
+            exit 1
+        fi
+        echo "Bundle image: $BUNDLE_IMAGE"
+
+        BUNDLE_DIR=$(mktemp -d)
+        trap "rm -rf $BUNDLE_DIR" EXIT
+
+        echo "Pulling bundle image..."
+        skopeo copy "docker://${BUNDLE_IMAGE}" "oci:${BUNDLE_DIR}:latest"
+
+        MANIFEST_DIGEST=$(jq -r '.manifests[0].digest' "${BUNDLE_DIR}/index.json" | sed 's/sha256://')
+        LAYERS=$(jq -r '.layers[].digest' "${BUNDLE_DIR}/blobs/sha256/${MANIFEST_DIGEST}" | sed 's/sha256://')
+
+        EXTRACT_DIR=$(mktemp -d)
+        for LAYER in $LAYERS; do
+            tar -xf "${BUNDLE_DIR}/blobs/sha256/${LAYER}" -C "${EXTRACT_DIR}" 2>/dev/null || true
+        done
+
+        CSV_FILE=$(find "${EXTRACT_DIR}" -path "*/manifests/*clusterserviceversion*" -type f | head -1)
+        if [ -z "$CSV_FILE" ]; then
+            echo "ERROR: Could not find CSV in bundle image"
+            exit 1
+        fi
+        echo "Found CSV: $CSV_FILE"
+
+        BUNDLE_RELATED_IMAGES=$(yq -r '.spec.relatedImages[].image' "$CSV_FILE")
+
+        if [ -z "$BUNDLE_RELATED_IMAGES" ]; then
+            echo "ERROR: No relatedImages found in bundle CSV"
+            exit 1
+        fi
+
+        echo "Bundle relatedImages:"
+        echo "$BUNDLE_RELATED_IMAGES"
+
+        BUNDLE_PASSED=0
+        BUNDLE_FAILED=0
+
+        for COMPONENT in $(echo "$SNAPSHOT" | jq -r '.components[] | select(.name | test("bundle|fbc|client") | not) | .name'); do
+            SNAPSHOT_DIGEST=$(echo "$SNAPSHOT" | jq -r --arg name "$COMPONENT" '.components[] | select(.name == $name) | .containerImage' | sed 's/.*@//')
+
+            echo "Checking snapshot component: ${COMPONENT}"
+            if echo "$BUNDLE_RELATED_IMAGES" | grep -q "$SNAPSHOT_DIGEST"; then
+                echo "PASS: ${COMPONENT} -> found in bundle relatedImages"
+                BUNDLE_PASSED=$((BUNDLE_PASSED + 1))
+            else
+                echo "FAIL: ${COMPONENT} - Digest not found in bundle relatedImages"
+                BUNDLE_FAILED=$((BUNDLE_FAILED + 1))
+            fi
+        done
+
+        echo "Snapshot components in bundle: ${BUNDLE_PASSED} passed, ${BUNDLE_FAILED} failed"
+
+        if [ "$BUNDLE_FAILED" -gt 0 ]; then
+            echo "ERROR: Bundle is missing snapshot component refs. Bundle was not built with latest images."
+            exit 1
+        fi
+
+        echo "All snapshot components verified in bundle relatedImages"
