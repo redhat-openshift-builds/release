@@ -25,45 +25,45 @@ metadata:
 spec:
   displayName: "OpenShift Builds Operator Build Test"
   params:
-  - name: git-url
-    value: https://github.com/redhat-openshift-builds/operator.git
-  - name: revision
-    value: main
-  - name: output-image
-    value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-test:{{revision}}
-  - name: image-expires-after
-    value: 1d
-  - name: dockerfile
-    value: Dockerfile
-  - name: build-source-image
-    value: "true"
-  - name: hermetic
-    value: "true"
-  - name: build-platforms
-    value:
-      - linux/x86_64
-      - linux/arm64
-  - name: prefetch-input
-    value: '{"packages": [{"type": "gomod"}]}'
-  - name: run-unit-test
-    value: "true"
-  - name: unit-test-url
-    value: '{{source_url}}'
-  - name: unit-test-revision
-    value: '{{revision}}'
-  - name: unit-test-command
-    value: "make test"
-  - name: component
-    value: 'openshift-builds-{{ repo_name }}'
-  - name: branch
-    value: '{{ target_branch }}'
-  - name: repository-url
-    value: '{{ repo_url }}'
-  - name: test-event
-    value: '{{ event_type }}'
-  - name: pull-request-number
-    value: '{{ pull_request_number }}'
-#    value: "go test $(go list ./... | grep -v /e2e) -coverprofile cover.out -v -ginkgo.v"
+    - name: git-url
+      value: https://github.com/redhat-openshift-builds/operator.git
+    - name: revision
+      value: main
+    - name: output-image
+      value: quay.io/redhat-user-workloads/rh-openshift-builds-tenant/openshift-builds-operator-test:{{revision}}
+    - name: image-expires-after
+      value: 1d
+    - name: dockerfile
+      value: Dockerfile
+    - name: build-source-image
+      value: "true"
+    - name: hermetic
+      value: "true"
+    - name: build-platforms
+      value:
+        - linux/x86_64
+        - linux/arm64
+    - name: prefetch-input
+      value: '{"packages": [{"type": "gomod"}]}'
+    - name: run-unit-test
+      value: "true"
+    - name: unit-test-url
+      value: '{{source_url}}'
+    - name: unit-test-revision
+      value: '{{revision}}'
+    - name: unit-test-command
+      value: "make test"
+    - name: component
+      value: 'openshift-builds-{{ repo_name }}'
+    - name: branch
+      value: '{{ target_branch }}'
+    - name: repository-url
+      value: '{{ repo_url }}'
+    - name: test-event
+      value: '{{ event_type }}'
+    - name: pull-request-number
+      value: '{{ pull_request_number }}'
+  #    value: "go test $(go list ./... | grep -v /e2e) -coverprofile cover.out -v -ginkgo.v"
   pipelineRef:
     name: konflux-build-multi-platform
   taskRunTemplate:
