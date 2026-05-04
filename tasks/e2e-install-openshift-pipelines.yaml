@@ -1,0 +1,113 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: e2e-install-openshift-pipelines
+  annotations:
+    tekton.dev/title: "Install OpenShift Pipelines Operator"
+spec:
+  params:
+    - name: eaasSpaceSecretRef
+      type: string
+      description: EaaS space secret reference
+    - name: clusterName
+      type: string
+      description: Name of the provisioned cluster
+  volumes:
+    - name: credentials
+      emptyDir: {}
+  steps:
+    - name: get-kubeconfig
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+      params:
+        - name: eaasSpaceSecretRef
+          value: $(params.eaasSpaceSecretRef)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: credentials
+          value: credentials
+    - name: install-pipelines
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: openshift-pipelines-operator
+          namespace: openshift-operators
+        spec:
+          channel: latest
+          name: openshift-pipelines-operator-rh
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        NAMESPACE="openshift-operators"
+
+        echo "=== Waiting for Subscription to be processed ==="
+        INSTALL_PLAN=""
+        for i in {1..60}; do
+            INSTALL_PLAN=$(oc get subscription openshift-pipelines-operator -n "$NAMESPACE" \
+              -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null || true)
+            if [ -n "$INSTALL_PLAN" ]; then
+                echo "InstallPlan found: $INSTALL_PLAN"
+                break
+            fi
+            echo "Waiting for InstallPlan to be created... ($i/60)"
+            sleep 5
+        done
+
+        if [ -z "$INSTALL_PLAN" ]; then
+            echo "ERROR: InstallPlan was not created within timeout"
+            oc get subscription openshift-pipelines-operator -n "$NAMESPACE" -o yaml
+            exit 1
+        fi
+
+        echo "=== Waiting for InstallPlan to complete ==="
+        oc wait "installplan/$INSTALL_PLAN" -n "$NAMESPACE" --for=condition=Installed --timeout=300s
+
+        echo "=== Waiting for CSV to succeed ==="
+        CSV_NAME=$(oc get subscription openshift-pipelines-operator -n "$NAMESPACE" \
+          -o jsonpath='{.status.currentCSV}')
+        oc wait "csv/$CSV_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s
+
+        DEPLOYMENTS=(
+            "openshift-pipelines-operator"
+            "tekton-operator-webhook"
+        )
+
+        for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+            echo "=== Waiting for deployment: $DEPLOYMENT ==="
+
+            if ! oc get deployment "$DEPLOYMENT" --namespace="$NAMESPACE" >/dev/null 2>&1; then
+                echo "ERROR: Deployment $DEPLOYMENT does not exist"
+                oc get deployments -n "$NAMESPACE"
+                exit 1
+            fi
+
+            if ! oc wait deployment "$DEPLOYMENT" --namespace="$NAMESPACE" --for="condition=available" --timeout="180s"; then
+                echo "ERROR: Deployment $DEPLOYMENT failed to become available"
+                oc get deployment "$DEPLOYMENT" --namespace="$NAMESPACE" -o yaml
+                exit 1
+            fi
+
+            echo "Deployment $DEPLOYMENT is available"
+        done
+
+        echo "OpenShift Pipelines installed successfully"

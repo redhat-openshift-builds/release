@@ -1,0 +1,178 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: e2e-deploy-operator
+  annotations:
+    tekton.dev/title: "Deploy and Verify OpenShift Builds Operator"
+spec:
+  params:
+    - name: eaasSpaceSecretRef
+      type: string
+      description: EaaS space secret reference
+    - name: clusterName
+      type: string
+      description: Name of the provisioned cluster
+    - name: SNAPSHOT
+      type: string
+      description: Konflux snapshot JSON
+  volumes:
+    - name: credentials
+      emptyDir: {}
+  steps:
+    - name: get-kubeconfig
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+      params:
+        - name: eaasSpaceSecretRef
+          value: $(params.eaasSpaceSecretRef)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: credentials
+          value: credentials
+    - name: deploy-operator
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        operator-sdk version
+
+        echo "Find bundle image in snapshot"
+        BUNDLE_IMAGE=$(jq -r '.components[] | select(.name | startswith("openshift-builds-operator-bundle")) | .containerImage' <<< "$SNAPSHOT" | head -1)
+        [ -z "$BUNDLE_IMAGE" ] && echo "ERROR: Bundle image not found" && exit 1
+        echo "Bundle: $BUNDLE_IMAGE"
+
+        echo "Install operator"
+        oc create namespace openshift-builds --dry-run=client -o yaml | oc apply -f -
+        operator-sdk run bundle --timeout=5m --namespace openshift-builds "$BUNDLE_IMAGE"
+
+        echo "Create OpenShiftBuild CR from operator's alm-examples"
+        CSV_NAME=$(oc get csv -n openshift-builds -o name | grep openshift-builds-operator | head -1)
+        oc get "$CSV_NAME" -n openshift-builds -o jsonpath='{.metadata.annotations.alm-examples}' | jq '.[0]' | oc apply -f -
+
+        echo "Wait for deployments to be created"
+        for i in {1..60}; do
+            if oc get deployment shipwright-build-controller -n openshift-builds &>/dev/null && \
+               oc get deployment shipwright-build-webhook -n openshift-builds &>/dev/null && \
+               oc get deployment shared-resource-csi-driver-webhook -n openshift-builds &>/dev/null && \
+               oc get daemonset shared-resource-csi-driver-node -n openshift-builds &>/dev/null; then
+                echo "All deployments found"
+                break
+            fi
+            echo "Waiting for operator to create deployments... ($i/60)"
+            sleep 10
+        done
+
+        echo "Add SCC permissions"
+        oc adm policy add-scc-to-user anyuid -z shipwright-build-controller -n openshift-builds
+        oc adm policy add-scc-to-user anyuid -z shipwright-build-webhook -n openshift-builds
+
+        echo "Create pipeline service account"
+        oc create serviceaccount pipeline -n openshift-builds 2>/dev/null || true
+        oc adm policy add-scc-to-user privileged -z pipeline -n openshift-builds
+        oc adm policy add-role-to-user edit -z pipeline -n openshift-builds
+
+        echo "Grant SCC for BuildKit tests"
+        oc adm policy add-scc-to-group privileged system:serviceaccounts:openshift-builds
+        oc adm policy add-scc-to-user privileged -z default -n openshift-builds
+        oc adm policy add-scc-to-group anyuid system:serviceaccounts:openshift-builds
+        oc create rolebinding privileged-scc-binding -n openshift-builds \
+          --clusterrole=system:openshift:scc:privileged \
+          --group=system:serviceaccounts:openshift-builds 2>/dev/null || true
+
+        echo "Wait for rollout"
+        oc rollout status deployment/shipwright-build-controller -n openshift-builds --timeout=10m
+        oc rollout status deployment/shipwright-build-webhook -n openshift-builds --timeout=5m
+        oc rollout status deployment/shared-resource-csi-driver-webhook -n openshift-builds --timeout=15m
+        oc rollout status daemonset/shared-resource-csi-driver-node -n openshift-builds --timeout=15m
+
+        echo "Operator deployed successfully"
+    - name: verify-operands
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        OPERANDS=(
+            "deployment/shipwright-build-controller"
+            "deployment/shipwright-build-webhook"
+            "deployment/shared-resource-csi-driver-webhook"
+            "daemonset/shared-resource-csi-driver-node"
+        )
+
+        for OPERAND in "${OPERANDS[@]}"; do
+            if ! oc get "$OPERAND" -n openshift-builds &>/dev/null; then
+                echo "ERROR: $OPERAND not found"
+                exit 1
+            fi
+
+            KIND="${OPERAND%%/*}"
+            NAME="${OPERAND##*/}"
+
+            if [ "$KIND" = "deployment" ]; then
+                READY=$(oc get "$OPERAND" -n openshift-builds -o jsonpath='{.status.readyReplicas}')
+                DESIRED=$(oc get "$OPERAND" -n openshift-builds -o jsonpath='{.spec.replicas}')
+            else
+                READY=$(oc get "$OPERAND" -n openshift-builds -o jsonpath='{.status.numberReady}')
+                DESIRED=$(oc get "$OPERAND" -n openshift-builds -o jsonpath='{.status.desiredNumberScheduled}')
+            fi
+
+            if [ "${READY:-0}" != "${DESIRED:-0}" ] || [ "${DESIRED:-0}" = "0" ]; then
+                echo "ERROR: $OPERAND not ready (ready=$READY, desired=$DESIRED)"
+                oc describe "$OPERAND" -n openshift-builds
+                exit 1
+            fi
+
+            echo "$OPERAND is ready ($READY/$DESIRED)"
+        done
+
+        echo "All operands deployed."
+    - name: verify-cr-status
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        oc wait --for=condition=Ready openshiftbuild/cluster --timeout=5m
+        oc get openshiftbuild/cluster -o jsonpath='{range .status.conditions[*]}  {.type}: {.status} ({.reason}){"\n"}{end}'
+
+        echo "Waiting for ShipwrightBuild CR to be created"
+        for i in {1..30}; do
+            if oc get shipwrightbuild -o name | head -1 &>/dev/null; then
+                break
+            fi
+            sleep 5
+        done
+
+        SHIPWRIGHT_CR=$(oc get shipwrightbuild -o name | head -1)
+        oc wait --for=condition=Ready "${SHIPWRIGHT_CR}" --timeout=5m
+        oc get "${SHIPWRIGHT_CR}" -o jsonpath='{range .status.conditions[*]}  {.type}: {.status} ({.reason}){"\n"}{end}'
+
+        echo "CR status verified."

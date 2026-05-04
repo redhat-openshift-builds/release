@@ -1,0 +1,94 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: e2e-verify-images
+  annotations:
+    tekton.dev/title: "Verify Running Operand Images"
+spec:
+  description: |
+    Post-deploy verification: checks that running operands are using images
+    from the snapshot, confirming the operator deployed the correct code.
+  params:
+    - name: eaasSpaceSecretRef
+      type: string
+      description: EaaS space secret reference
+    - name: clusterName
+      type: string
+      description: Name of the provisioned cluster
+    - name: SNAPSHOT
+      type: string
+      description: Konflux snapshot JSON
+  volumes:
+    - name: credentials
+      emptyDir: {}
+  steps:
+    - name: get-kubeconfig
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+      params:
+        - name: eaasSpaceSecretRef
+          value: $(params.eaasSpaceSecretRef)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: credentials
+          value: credentials
+    - name: verify-operand-images
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        echo "Verifying running operands match snapshot images"
+
+        OPERANDS=(
+            "deployment/shipwright-build-controller"
+            "deployment/shipwright-build-webhook"
+            "deployment/shared-resource-csi-driver-webhook"
+        )
+
+        OPERAND_PASSED=0
+        OPERAND_FAILED=0
+
+        for OPERAND in "${OPERANDS[@]}"; do
+            OPERAND_IMAGE=$(oc get "$OPERAND" -n openshift-builds -o jsonpath='{.spec.template.spec.containers[0].image}')
+
+            REPO_TAG="${OPERAND_IMAGE%@*}"
+            RUNNING_DIGEST="${OPERAND_IMAGE##*@}"
+
+            echo "Checking ${OPERAND}..."
+            echo "  Image: ${REPO_TAG}"
+            echo "  Running digest: ${RUNNING_DIGEST}"
+
+            if echo "$SNAPSHOT" | jq -e --arg digest "$RUNNING_DIGEST" '.components[] | select(.containerImage | contains($digest))' > /dev/null 2>&1; then
+                MATCHED_COMPONENT=$(echo "$SNAPSHOT" | jq -r --arg digest "$RUNNING_DIGEST" '.components[] | select(.containerImage | contains($digest)) | .name')
+                echo "  PASS: Matches snapshot component '$MATCHED_COMPONENT'"
+                OPERAND_PASSED=$((OPERAND_PASSED + 1))
+            else
+                echo "  FAIL: Running digest not found in snapshot. Not testing the PR/latest code."
+                OPERAND_FAILED=$((OPERAND_FAILED + 1))
+            fi
+        done
+
+        echo "${OPERAND_PASSED} passed, ${OPERAND_FAILED} failed"
+
+        if [ "$OPERAND_FAILED" -gt 0 ]; then
+            echo "ERROR: ${OPERAND_FAILED} operand(s) not matching snapshot images"
+            exit 1
+        fi
+
+        echo "All running operands verified against snapshot"

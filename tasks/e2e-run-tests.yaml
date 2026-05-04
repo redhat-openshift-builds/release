@@ -1,0 +1,162 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: e2e-run-tests
+  annotations:
+    tekton.dev/title: "Run E2E Tests"
+spec:
+  params:
+    - name: eaasSpaceSecretRef
+      type: string
+      description: EaaS space secret reference
+    - name: clusterName
+      type: string
+      description: Name of the provisioned cluster
+    - name: SNAPSHOT
+      type: string
+      description: Konflux snapshot JSON
+    - name: BUILDS_SAMPLES_REPO
+      type: string
+      default: "https://github.com/redhat-openshift-builds/builds-samples.git"
+      description: Builds samples repository URL
+    - name: BUILDS_SAMPLES_BRANCH
+      type: string
+      default: "main"
+      description: Builds samples branch
+    - name: SHIPWRIGHT_BUILD_REPO
+      type: string
+      default: "https://github.com/shipwright-io/build.git"
+      description: Shipwright build repository URL
+    - name: SHIPWRIGHT_BUILD_BRANCH
+      type: string
+      default: "main"
+      description: Shipwright build branch
+  volumes:
+    - name: credentials
+      emptyDir: {}
+  steps:
+    - name: get-kubeconfig
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/build-definitions.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
+      params:
+        - name: eaasSpaceSecretRef
+          value: $(params.eaasSpaceSecretRef)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: credentials
+          value: credentials
+    - name: run-e2e-tests
+      image: quay.io/avinkuma/rh-openshift-builds/ci:latest
+      env:
+        - name: KUBECONFIG
+          value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+        - name: TEST_NAMESPACE
+          value: "openshift-builds"
+        - name: BUILDS_SAMPLES_REPO
+          value: $(params.BUILDS_SAMPLES_REPO)
+        - name: BUILDS_SAMPLES_BRANCH
+          value: $(params.BUILDS_SAMPLES_BRANCH)
+        - name: SHIPWRIGHT_BUILD_REPO
+          value: $(params.SHIPWRIGHT_BUILD_REPO)
+        - name: SHIPWRIGHT_BUILD_BRANCH
+          value: $(params.SHIPWRIGHT_BUILD_BRANCH)
+      volumeMounts:
+        - name: credentials
+          mountPath: /credentials
+      script: |
+        #!/usr/bin/env bash
+        set -ex -u -o pipefail
+
+        export PATH=$PATH:$(go env GOPATH)/bin
+
+        SAMPLE_NS="builds-sample"
+        oc create namespace "$SAMPLE_NS"
+        git clone --branch "$BUILDS_SAMPLES_BRANCH" --single-branch "$BUILDS_SAMPLES_REPO" /workspace/builds-sample
+        cd /workspace/builds-sample
+        oc apply -f build -n "$SAMPLE_NS"
+        oc apply -f buildrun -n "$SAMPLE_NS"
+
+        echo "=== Waiting for all BuildRuns to complete ==="
+        timeout 10m bash -c '
+          while true; do
+            PENDING=$(oc get buildruns -n '"$SAMPLE_NS"' -o json | jq "
+              [.items[]
+                | select(
+                    .status.conditions == null
+                    or (.status.conditions[0].status | test(\"True|False\") | not)
+                  )
+              ] | length
+            ")
+            [ "$PENDING" -eq 0 ] && break
+            echo "Still waiting for $PENDING BuildRuns..."
+            sleep 20
+          done
+        '
+
+        echo "=== Checking for failed BuildRuns ==="
+        FAILED_BUILDRUNS=$(oc get buildruns -n "$SAMPLE_NS" -o json | jq -r '
+          .items[]
+          | select(.status.conditions[]? | select(.type=="Succeeded" and .status=="False"))
+          | .metadata.name
+        ')
+
+        if [ -z "$FAILED_BUILDRUNS" ]; then
+          echo "No failed BuildRuns detected"
+        else
+          echo "Failed BuildRuns:"
+          echo "$FAILED_BUILDRUNS"
+
+          echo "=== Failure details ==="
+          for BR in $FAILED_BUILDRUNS; do
+            echo "---- BuildRun: $BR ----"
+            oc get buildrun "$BR" -n "$SAMPLE_NS" -o jsonpath='
+          Reason: {.status.conditions[?(@.type=="Succeeded")].reason}{"\n"}
+          Message: {.status.conditions[?(@.type=="Succeeded")].message}{"\n"}
+          '
+          done
+
+          echo "=== Fetching logs for failed BuildRuns ==="
+          for BR in $FAILED_BUILDRUNS; do
+            POD=$(oc get pods -n "$SAMPLE_NS" \
+              -l buildrun.shipwright.io/name="$BR" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+            if [ -n "$POD" ]; then
+              echo "---- Logs for $BR (pod: $POD) ----"
+              oc logs -n "$SAMPLE_NS" "$POD" --all-containers=true || true
+            else
+              echo "No pod found for BuildRun $BR"
+            fi
+          done
+
+          echo "ERROR: One or more BuildRuns failed"
+          exit 1
+        fi
+
+        git clone --branch "$SHIPWRIGHT_BUILD_BRANCH" --single-branch "$SHIPWRIGHT_BUILD_REPO" /workspace/openshift-builds
+        cd /workspace/openshift-builds
+
+        export TEST_NAMESPACE="openshift-builds"
+        export TEST_CONTROLLER_NAMESPACE="openshift-builds"
+        export TEST_WATCH_NAMESPACE="openshift-builds"
+        export TEST_E2E_SERVICEACCOUNT_NAME="pipeline"
+        export TEST_IMAGE_REPO="ttl.sh/build-e2e"
+
+        oc apply -n "${TEST_NAMESPACE}" -R -f samples/v1beta1/buildstrategy/
+
+        ginkgo run -r \
+          --compilers=1 \
+          --randomize-all \
+          --timeout=1h \
+          --trace -v \
+          --skip-file=e2e_vulnerability_scanning_test.go \
+          --skip-file=e2e_pipelinerun_test.go \
+          --skip='mutate image timestamp when using BuildKit|when a Buildkit build with a contextDir|when a heroku Buildpacks|when a BuildKit build runs with a custom target' \
+          ./test/e2e/v1beta1
