@@ -19,7 +19,7 @@ spec:
     - description: The Go base image used to run the unit tests
       name: BASE_IMAGE
       type: string
-      default: registry.redhat.io/ubi10/go-toolset@sha256:b7f71131f21be923baaaf952309b7940ae7c6a55ca44a7a91460adc6c8afd4de
+      default: registry.redhat.io/ubi10/go-toolset@sha256:ee25ad0e020fd471b921bc13aecc2baa992b1c38c327d0680b9a49070a1b564b
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir

@@ -123,7 +123,7 @@ spec:
     - description: The base image used to run the unit tests
       name: unit-test-base-image
       type: string
-      default: registry.redhat.io/ubi9/go-toolset@sha256:71f121a44270e46a17a548d6b92096a1a0fb56db44927ad318d095177d6dce4b
+      default: registry.redhat.io/ubi9/go-toolset@sha256:59ec4752cf86f0d0dd240b9e29c64d6ee560c28fc986171e126db1db216a246a
     - default: "false"
       description: Set 'true' to enable sealights
       name: enable-sealights
