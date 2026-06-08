@@ -127,7 +127,7 @@ spec:
     - description: The base image used to run the unit tests
       name: unit-test-base-image
       type: string
-      default: registry.redhat.io/ubi9/go-toolset@sha256:59ec4752cf86f0d0dd240b9e29c64d6ee560c28fc986171e126db1db216a246a
+      default: registry.redhat.io/ubi10/go-toolset@sha256:d5d48915a31c7c774caf7568f7fbe3b25275e042f9f4de73d13fba39f9b2a987
     - default: docker
       description: The format for the resulting image's mediaType. Valid values are oci (default) or docker.
       name: buildah-format
