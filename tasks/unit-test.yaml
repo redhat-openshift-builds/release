@@ -20,6 +20,18 @@ spec:
       name: BASE_IMAGE
       type: string
       default: registry.redhat.io/ubi10/go-toolset@sha256:d5d48915a31c7c774caf7568f7fbe3b25275e042f9f4de73d13fba39f9b2a987
+    - description: Upload coverage to Codecov
+      name: UPLOAD_CODECOV
+      type: string
+      default: "false"
+    - description: Codecov flags for the upload
+      name: CODECOV_FLAGS
+      type: string
+      default: "unit-tests"
+    - description: Path to the coverage file relative to the source directory
+      name: COVERAGE_FILE
+      type: string
+      default: "cover.out"
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir
@@ -29,6 +41,8 @@ spec:
         name: cachi2
       - name: sealights-credentials
         mountPath: /usr/local/sealights-credentials
+      - name: codecov-credentials
+        mountPath: /usr/local/codecov-credentials
     securityContext:
       # This is needed because the different steps in this Task run with different user IDs.
       runAsUser: 0
@@ -54,6 +68,39 @@ spec:
         export SEALIGHTS_TOKEN
         SEALIGHTS_TOKEN="$(cat /usr/local/sealights-credentials/token)"
         $(params.TEST_COMMAND)
+    - name: upload-coverage
+      image: $(params.BASE_IMAGE)
+      workingDir: /var/workdir/source
+      script: |
+        #!/usr/bin/env sh
+        if [ "$(params.UPLOAD_CODECOV)" != "true" ]; then
+          echo "Codecov upload disabled, skipping."
+          exit 0
+        fi
+
+        CODECOV_TOKEN=""
+        if [ -f /usr/local/codecov-credentials/token ]; then
+          CODECOV_TOKEN="$(cat /usr/local/codecov-credentials/token)"
+        fi
+
+        if [ -z "${CODECOV_TOKEN}" ]; then
+          echo "WARNING: Codecov token not found, skipping coverage upload."
+          exit 0
+        fi
+
+        if [ ! -f "$(params.COVERAGE_FILE)" ]; then
+          echo "WARNING: Coverage file $(params.COVERAGE_FILE) not found, skipping upload."
+          exit 0
+        fi
+
+        echo "Uploading coverage to Codecov..."
+        curl -Os https://cli.codecov.io/latest/linux/codecov
+        chmod +x codecov
+        ./codecov upload-process \
+          --token "${CODECOV_TOKEN}" \
+          --flag "$(params.CODECOV_FLAGS)" \
+          --file "$(params.COVERAGE_FILE)" \
+          || echo "WARNING: Codecov upload failed, continuing..."
   volumes:
     - name: workdir
       emptyDir: {}
@@ -62,3 +109,7 @@ spec:
     - name: sealights-credentials
       secret:
         secretName: sealights-credentials
+    - name: codecov-credentials
+      secret:
+        secretName: codecov-token
+        optional: true

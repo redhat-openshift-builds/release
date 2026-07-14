@@ -128,6 +128,14 @@ spec:
       name: unit-test-base-image
       type: string
       default: registry.redhat.io/ubi10/go-toolset@sha256:d5d48915a31c7c774caf7568f7fbe3b25275e042f9f4de73d13fba39f9b2a987
+    - default: "false"
+      description: Upload coverage to Codecov after unit tests
+      name: upload-codecov
+      type: string
+    - default: "unit-tests"
+      description: Codecov flags for the coverage upload
+      name: codecov-flags
+      type: string
     - default: docker
       description: The format for the resulting image's mediaType. Valid values are oci (default) or docker.
       name: buildah-format
@@ -239,6 +247,10 @@ spec:
           value: $(params.unit-test-command)
         - name: BASE_IMAGE
           value: $(params.unit-test-base-image)
+        - name: UPLOAD_CODECOV
+          value: $(params.upload-codecov)
+        - name: CODECOV_FLAGS
+          value: $(params.codecov-flags)
       when:
         - input: $(params.run-unit-test)
           operator: in
