@@ -67,21 +67,25 @@ spec:
       name: buildah-format
       type: string
     - name: enable-package-registry-proxy
-      default: 'true'
+      default: "true"
       description: Use the package registry proxy when prefetching dependencies
       type: string
     - name: source-date-epoch
       type: string
-      default: ''
+      default: ""
       description: Sets the image created time and the SOURCE_DATE_EPOCH build argument. On its own, it does not change file timestamps inside the layers (set rewrite-timestamp to "true" for that). Leave empty to keep the actual build time.
     - name: rewrite-timestamp
       type: string
-      default: 'false'
+      default: "false"
       description: When "true", clamp file modification times in the image layers to at most source-date-epoch. Does nothing unless source-date-epoch is set.
     - name: omit-history
       type: string
-      default: 'false'
+      default: "false"
       description: When "true", omit the build history (history timestamps, layer metadata, etc.) from the resulting image.
+    - name: enableSymlinkCheck
+      type: string
+      default: "true"
+      description: When true, the clone task will fail if there are symlinks pointing outside the source. Disable for submodules.
   results:
     - description: ""
       name: IMAGE_URL
@@ -117,6 +121,8 @@ spec:
           value: $(params.output-image).git
         - name: ociArtifactExpiresAfter
           value: $(params.image-expires-after)
+        - name: enableSymlinkCheck
+          value: $(params.enableSymlinkCheck)
       runAfter:
         - init
       taskRef:
@@ -206,7 +212,7 @@ spec:
           - name: name
             value: buildah-remote-oci-ta
           - name: bundle
-            value: quay.io/konflux-ci/tekton-catalog/task-buildah-remote-oci-ta:0.11.0@sha256:78529bcd4a665aad693af8b98b2fed223a0b853c4f0cf3a8620eebdd66f517ea
+            value: quay.io/konflux-ci/tekton-catalog/task-buildah-remote-oci-ta:0.11.1@sha256:effb57d4bf055adc2bacc196eb181575717bfc91bf3cbcdf022ca7e9adf26d81
           - name: kind
             value: task
         resolver: bundles
