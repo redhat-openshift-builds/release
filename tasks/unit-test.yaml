@@ -47,7 +47,7 @@ spec:
       # This is needed because the different steps in this Task run with different user IDs.
       runAsUser: 0
   steps:
-    - image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:d572a66b49f041fc9fa7334bdc78ce8d416ad4b438a5b0105aa9187698faf814
+    - image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:9161c42f567e8ecb1ee63712c821c00fd040b98e85d2209a6ada0495514acfb4
       name: use-trusted-artifact
       args:
         - use
